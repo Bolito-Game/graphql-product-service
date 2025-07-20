@@ -1,0 +1,14 @@
+{
+  "name": "product-service",
+  "version": "1.0.0",
+  "description": "GraphQL Product Service",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.433.0",
+    "@aws-sdk/lib-dynamodb": "^3.433.0",
+    "graphql": "^16.8.1"
+  }
+}

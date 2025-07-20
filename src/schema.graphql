@@ -1,0 +1,109 @@
+# Defines the structure of a resolved product for a specific locale.
+type Product {
+  SKU: ID!
+  Category: String!
+  Category_Text: String!
+  Name: String!
+  Description: String
+  Image_URL: String
+  Status: String!
+  Last_Updated: String!
+  Quantity_In_Stock: Int!
+  Price: Float!
+  Currency: String!
+}
+
+# A paginated list of products, following connection patterns.
+# Includes the list of items for the current page and a token to fetch the next page.
+type ProductConnection {
+  items: [Product]!
+  nextToken: String
+}
+
+# Standardized error response for better client-side handling.
+type Error {
+  field: String
+  message: String!
+}
+
+# The response for a single product query, which can be a product or an error.
+type ProductResponse {
+  product: Product
+  errors: [Error!]
+}
+
+# The response for any mutation, indicating success or failure and returning the affected object.
+type MutationResponse {
+  success: Boolean!
+  product: Product
+  errors: [Error!]
+}
+
+# Input for providing localized data during creation or update.
+input LocalizationInput {
+  lang: String!
+  country: String!
+  Category_Text: String!
+  Name: String!
+  Description: String
+  Price: Float!
+  Currency: String!
+}
+
+# Input for creating a new product. SKU is required, as are initial localizations.
+input CreateProductInput {
+  SKU: ID!
+  Category: String!
+  Image_URL: String
+  Status: String!
+  Quantity_In_Stock: Int!
+  localizations: [LocalizationInput!]!
+}
+
+# Input for updating an existing product. SKU is required, all other fields are optional.
+input UpdateProductInput {
+  SKU: ID!
+  Category: String
+  Image_URL: String
+  Status: String
+  Quantity_In_Stock: Int
+  # Use this to add or update specific localizations without affecting others.
+  localizations: [LocalizationInput!]
+}
+
+type Query {
+  """
+  Fetches a single product by its SKU for a given language and country.
+  Defaults: lang="en", country="us"
+  """
+  getProductBySKU(SKU: ID!, lang: String = "en", country: String = "us"): ProductResponse
+
+  """
+  Fetches all products within a specific category, sorted by Category.
+  Defaults: lang="en", country="us"
+  """
+  getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product]!
+
+  """
+  Fetches a paginated list of all products.
+  Defaults: lang="en", country="us", limit=20
+  """
+  getAllProducts(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): ProductConnection!
+}
+
+type Mutation {
+  """
+  Creates a new product with all its initial localizations. Fails if SKU already exists.
+  """
+  createProduct(input: CreateProductInput!): MutationResponse!
+
+  """
+  Updates an existing product's master data or specific localizations.
+  """
+  updateProduct(input: UpdateProductInput!): MutationResponse!
+
+  """
+  Deletes a product from the database using its SKU.
+  """
+  deleteProduct(SKU: ID!): MutationResponse!
+}

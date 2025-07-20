@@ -1,57 +1,136 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  graph-product-service
+  GraphQL Product Service
+  A production-ready serverless application providing a GraphQL API for product data.
 
-  Sample SAM Template for graph-product-service
+# =================================================================================
+# Parameters - Values you can provide at deployment time to customize the stack.
+# =================================================================================
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ProductService # Used for naming resources and the API Gateway stage.
+  TableName:
+    Type: String
+    Default: Products # The name of the DynamoDB table.
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+# =================================================================================
+# Globals - Default settings for all functions in this template.
+# =================================================================================
 Globals:
   Function:
-    Timeout: 3
+    Timeout: 10 # Default timeout for functions in seconds
+    MemorySize: 256 # Default memory allocation in MB
 
-    Tracing: Active
-  Api:
-    TracingEnabled: true
+# =================================================================================
+# Resources - The AWS components that make up our application.
+# =================================================================================
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  # --- DynamoDB Table ---
+  # Defines the NoSQL database for storing product data.
+  ProductsTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      CodeUri: hello-world/
-      Handler: app.lambdaHandler
+      TableName: !Ref TableName
+      AttributeDefinitions:
+        - AttributeName: SKU
+          AttributeType: S
+        - AttributeName: Category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: SKU
+          KeyType: HASH # Partition Key
+      BillingMode: PAY_PER_REQUEST # Best for unpredictable workloads
+      GlobalSecondaryIndexes:
+        - IndexName: CategoryIndex
+          KeySchema:
+            - AttributeName: Category
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL # Project all attributes to the index
+
+  # --- API Gateway ---
+  # Defines the HTTP endpoint, security, and usage plan.
+  GraphQLApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref ProjectName
+      # This enforces that every request must include a valid API Key.
+      Auth:
+        ApiKeyRequired: true
+      # CORS configuration to allow web browsers to call the API from different domains
+      Cors:
+        AllowMethods: "'POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'" # CHANGEME: In production, lock this down to your specific frontend domain, e.g., "'https://www.myapp.com'"
+      
+  # --- API Gateway Usage Plan and API Key ---
+  # Manages who can access the API and at what rate.
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId: !Ref GraphQLApi
+          Stage: !Ref ProjectName
+      Description: !Sub Usage plan for the ${ProjectName} API
+      # CHANGEME: Adjust throttle and quota for production needs
+      Throttle:
+        BurstLimit: 20
+        RateLimit: 10
+
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: !Sub ${ProjectName}-Key
+      Enabled: true
+
+  ApiUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan
+
+  # --- Lambda Function ---
+  # The core logic for the GraphQL service.
+  GraphQLFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-GraphQL-Handler
+      # The source code is in the 'src' directory
+      CodeUri: src/
+      Handler: index.handler
       Runtime: nodejs18.x
       Architectures:
-      - x86_64
+        - x86_64 # or arm64
+      # Pass the DynamoDB table name to the function as an environment variable
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+      # This is the security heart: defining the exact permissions the function has.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TableName
       Events:
-        HelloWorld:
-          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+        # Links this function to a specific path/method on our API Gateway
+        ApiEvent:
+          Type: Api
           Properties:
-            Path: /hello
-            Method: get
+            Path: /graphql
+            Method: post
+            RestApiId: !Ref GraphQLApi
 
-  ApplicationResourceGroup:
-    Type: AWS::ResourceGroups::Group
-    Properties:
-      Name:
-        Fn::Sub: ApplicationInsights-SAM-${AWS::StackName}
-      ResourceQuery:
-        Type: CLOUDFORMATION_STACK_1_0
-  ApplicationInsightsMonitoring:
-    Type: AWS::ApplicationInsights::Application
-    Properties:
-      ResourceGroupName:
-        Ref: ApplicationResourceGroup
-      AutoConfigurationEnabled: 'true'
+# =================================================================================
+# Outputs - Values displayed after a successful deployment.
+# =================================================================================
 Outputs:
-  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
-  # Find out more about other implicit resources you can reference within SAM
-  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
-  HelloWorldApi:
-    Description: API Gateway endpoint URL for Prod stage for Hello World function
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello/"
-  HelloWorldFunction:
-    Description: Hello World Lambda Function ARN
-    Value: !GetAtt HelloWorldFunction.Arn
-  HelloWorldFunctionIamRole:
-    Description: Implicit IAM Role created for Hello World function
-    Value: !GetAtt HelloWorldFunctionRole.Arn
+  GraphQLApiEndpoint:
+    Description: "The endpoint URL for the GraphQL API"
+    Value: !Sub "https://#{GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/${ProjectName}/graphql"
+  ApiKeyId:
+    Description: "The ID of the API Key created for this stack"
+    Value: !Ref ApiKey
+  LambdaFunctionName:
+    Description: "GraphQL Lambda Function Name"
+    Value: !Ref GraphQLFunction
