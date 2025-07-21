@@ -47,7 +47,7 @@ Resources:
       FunctionName: !Sub ${ProjectName}-GraphQL-Handler
       CodeUri: src/
       Handler: index.handler
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Architectures:
         - x86_64
       Environment:
