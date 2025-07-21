@@ -2,33 +2,22 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   GraphQL Product Service
-  A production-ready serverless application providing a GraphQL API for product data.
+  A production-ready serverless application providing a GraphQL API for product data, with CORS.
 
-# =================================================================================
-# Parameters - Values you can provide at deployment time to customize the stack.
-# =================================================================================
 Parameters:
   ProjectName:
     Type: String
-    Default: ProductService # Used for naming resources and the API Gateway stage.
+    Default: ProductService
   TableName:
     Type: String
-    Default: Products # The name of the DynamoDB table.
+    Default: Products
 
-# =================================================================================
-# Globals - Default settings for all functions in this template.
-# =================================================================================
 Globals:
   Function:
-    Timeout: 10 # Default timeout for functions in seconds
-    MemorySize: 256 # Default memory allocation in MB
+    Timeout: 10
+    MemorySize: 256
 
-# =================================================================================
-# Resources - The AWS components that make up our application.
-# =================================================================================
 Resources:
-  # --- DynamoDB Table ---
-  # Defines the NoSQL database for storing product data.
   ProductsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -40,41 +29,122 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: SKU
-          KeyType: HASH # Partition Key
-      BillingMode: PAY_PER_REQUEST # Best for unpredictable workloads
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
       GlobalSecondaryIndexes:
         - IndexName: CategoryIndex
           KeySchema:
             - AttributeName: Category
               KeyType: HASH
           Projection:
-            ProjectionType: ALL # Project all attributes to the index
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
 
-  # --- API Gateway ---
-  # Defines the HTTP endpoint, security, and usage plan.
+  GraphQLFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-GraphQL-Handler
+      CodeUri: src/
+      Handler: index.handler
+      Runtime: nodejs18.x
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TableName
+      Tracing: Active
+
   GraphQLApi:
-    Type: AWS::Serverless::Api
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref ProjectName
+      Description: "API for the Product Service"
+      EndpointConfiguration:
+        Types:
+          - EDGE
+
+  GraphQLApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ParentId: !GetAtt GraphQLApi.RootResourceId
+      PathPart: graphql
+
+  GraphQLApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResourceId: !Ref GraphQLApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GraphQLFunction.Arn}/invocations"
+
+  GraphQLApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResourceId: !Ref GraphQLApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels: {}
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{ "statusCode": 200 }'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'" # CHANGEME
+
+  GraphQLFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GraphQLFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      # THIS IS THE CORRECTED LINE
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/graphql"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - GraphQLApiMethod
+      - GraphQLApiOptionsMethod
+    Properties:
+      RestApiId: !Ref GraphQLApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
     Properties:
       StageName: !Ref ProjectName
-      # This enforces that every request must include a valid API Key.
-      Auth:
-        ApiKeyRequired: true
-      # CORS configuration to allow web browsers to call the API from different domains
-      Cors:
-        AllowMethods: "'POST,OPTIONS'"
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-        AllowOrigin: "'*'" # CHANGEME: In production, lock this down to your specific frontend domain, e.g., "'https://www.myapp.com'"
-      
-  # --- API Gateway Usage Plan and API Key ---
-  # Manages who can access the API and at what rate.
+      RestApiId: !Ref GraphQLApi
+      DeploymentId: !Ref ApiDeployment
+
   ApiUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
+    DependsOn: ApiStage
     Properties:
       ApiStages:
         - ApiId: !Ref GraphQLApi
           Stage: !Ref ProjectName
       Description: !Sub Usage plan for the ${ProjectName} API
-      # CHANGEME: Adjust throttle and quota for production needs
       Throttle:
         BurstLimit: 20
         RateLimit: 10
@@ -92,42 +162,19 @@ Resources:
       KeyType: API_KEY
       UsagePlanId: !Ref ApiUsagePlan
 
-  # --- Lambda Function ---
-  # The core logic for the GraphQL service.
-  GraphQLFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${ProjectName}-GraphQL-Handler
-      # The source code is in the 'src' directory
-      CodeUri: src/
-      Handler: index.handler
-      Runtime: nodejs18.x
-      Architectures:
-        - x86_64 # or arm64
-      # Pass the DynamoDB table name to the function as an environment variable
-      Environment:
-        Variables:
-          TABLE_NAME: !Ref TableName
-      # This is the security heart: defining the exact permissions the function has.
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref TableName
-      Events:
-        # Links this function to a specific path/method on our API Gateway
-        ApiEvent:
-          Type: Api
-          Properties:
-            Path: /graphql
-            Method: post
-            RestApiId: !Ref GraphQLApi
-
-# =================================================================================
-# Outputs - Values displayed after a successful deployment.
-# =================================================================================
 Outputs:
   GraphQLApiEndpoint:
     Description: "The endpoint URL for the GraphQL API"
-    Value: !Sub "https://#{GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/${ProjectName}/graphql"
+    Value:
+      Fn::Join:
+        - ''
+        - - 'https://'
+          - !Ref GraphQLApi
+          - '.execute-api.'
+          - !Ref 'AWS::Region'
+          - '.amazonaws.com/'
+          - !Ref ApiStage
+          - '/graphql'
   ApiKeyId:
     Description: "The ID of the API Key created for this stack"
     Value: !Ref ApiKey
