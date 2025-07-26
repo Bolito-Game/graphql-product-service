@@ -2,7 +2,8 @@
   "name": "product-service",
   "version": "1.0.0",
   "description": "GraphQL Product Service",
-  "main": "index.js",
+  "main": "admin.js",
+  "private": true,
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

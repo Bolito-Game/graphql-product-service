@@ -20,7 +20,7 @@ resolve_s3 = true
 stack_name = "graphql-product-service-prod"
 s3_prefix = "graphql-product-service-prod"
 region = "us-east-2"
-parameter_overrides = "ProjectName=\"ProductService\" TableName=\"Products\""
+parameter_overrides = "ProjectName=\"productsrv\" TableName=\"Products\""
 image_repositories = []
 
 [default.package.parameters]

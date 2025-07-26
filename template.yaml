@@ -1,13 +1,13 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  GraphQL Product Service
-  A production-ready serverless application providing a GraphQL API for product data, with CORS.
+  A unified stack for the GraphQL Product Service with dual-auth.
+  This version uses the explicit AWS::ApiGateway resource structure and corrects the ApiUsagePlan dependency.
 
 Parameters:
   ProjectName:
     Type: String
-    Default: ProductService
+    Default: ProductApp
   TableName:
     Type: String
     Default: Products
@@ -16,124 +16,118 @@ Globals:
   Function:
     Timeout: 10
     MemorySize: 256
+    Runtime: nodejs22.x
+    Architectures:
+      - x86_64
 
 Resources:
+  # =================================================================
+  # == 1. DATABASE
+  # =================================================================
   ProductsTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Ref TableName
-      AttributeDefinitions:
-        - AttributeName: SKU
-          AttributeType: S
-        - AttributeName: Category
-          AttributeType: S
-      KeySchema:
-        - AttributeName: SKU
-          KeyType: HASH
+      AttributeDefinitions: [{AttributeName: SKU, AttributeType: S}, {AttributeName: Category, AttributeType: S}]
+      KeySchema: [{AttributeName: SKU, KeyType: HASH}]
       BillingMode: PAY_PER_REQUEST
       GlobalSecondaryIndexes:
         - IndexName: CategoryIndex
-          KeySchema:
-            - AttributeName: Category
-              KeyType: HASH
-          Projection:
-            ProjectionType: ALL
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
+          KeySchema: [{AttributeName: Category, KeyType: HASH}]
+          Projection: {ProjectionType: ALL}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
 
-  GraphQLFunction:
+  # =================================================================
+  # == 2. LAMBDA FUNCTIONS
+  # =================================================================
+  GraphQLAdminFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${ProjectName}-GraphQL-Handler
+      FunctionName: !Sub '${ProjectName}-GraphQL-Admin-Handler'
       CodeUri: src/
-      Handler: index.handler
-      Runtime: nodejs22.x
-      Architectures:
-        - x86_64
-      Environment:
-        Variables:
-          TABLE_NAME: !Ref TableName
+      Handler: admin.handler
+      Environment: {Variables: {TABLE_NAME: !Ref TableName}}
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref TableName
-      Tracing: Active
+        - DynamoDBCrudPolicy: {TableName: !Ref TableName}
 
+  GraphQLPublicFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-GraphQL-Public-Handler'
+      CodeUri: src/
+      Handler: public.handler
+      Environment: {Variables: {TABLE_NAME: !Ref TableName}}
+      Policies:
+        - DynamoDBReadPolicy: {TableName: !Ref TableName}
+
+  # =================================================================
+  # == 3. API GATEWAY (EXPLICIT RESOURCE DEFINITIONS)
+  # =================================================================
   GraphQLApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
       Name: !Ref ProjectName
-      Description: "API for the Product Service"
-      EndpointConfiguration:
-        Types:
-          - EDGE
+      EndpointConfiguration: {Types: [EDGE]}
 
-  GraphQLApiResource:
-    Type: AWS::ApiGateway::Resource
+  ApiGatewayCognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
     Properties:
+      Name: !Sub '${ProjectName}-Cognito-Authorizer'
+      Type: COGNITO_USER_POOLS
       RestApiId: !Ref GraphQLApi
-      ParentId: !GetAtt GraphQLApi.RootResourceId
-      PathPart: graphql
+      IdentitySource: 'method.request.header.Authorization'
+      ProviderARNs: [!GetAtt CognitoUserPool.Arn]
 
-  GraphQLApiMethod:
+  AdminApiResourceParent:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !GetAtt GraphQLApi.RootResourceId, PathPart: admin}
+  AdminApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref AdminApiResourceParent, PathPart: graphql}
+  AdminApiMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref GraphQLApi
-      ResourceId: !Ref GraphQLApiResource
+      ResourceId: !Ref AdminApiResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiGatewayCognitoAuthorizer
+      Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GraphQLAdminFunction.Arn}/invocations"}
+
+  PublicApiResourceParent:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !GetAtt GraphQLApi.RootResourceId, PathPart: public}
+  PublicApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PublicApiResourceParent, PathPart: graphql}
+  PublicApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResourceId: !Ref PublicApiResource
       HttpMethod: POST
       AuthorizationType: NONE
       ApiKeyRequired: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GraphQLFunction.Arn}/invocations"
+      Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GraphQLPublicFunction.Arn}/invocations"}
 
-  GraphQLApiOptionsMethod:
+  AdminApiOptionsMethod:
     Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref GraphQLApi
-      ResourceId: !Ref GraphQLApiResource
-      HttpMethod: OPTIONS
-      AuthorizationType: NONE
-      ApiKeyRequired: false
-      MethodResponses:
-        - StatusCode: '200'
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Headers: true
-            method.response.header.Access-Control-Allow-Methods: true
-            method.response.header.Access-Control-Allow-Origin: true
-          ResponseModels: {}
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{ "statusCode": 200 }'
-        IntegrationResponses:
-          - StatusCode: '200'
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
-              method.response.header.Access-Control-Allow-Origin: "'*'" # CHANGEME
-
-  GraphQLFunctionPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt GraphQLFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      # THIS IS THE CORRECTED LINE
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/graphql"
+    Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref AdminApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
+  PublicApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref PublicApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
 
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn:
-      - GraphQLApiMethod
-      - GraphQLApiOptionsMethod
+    DependsOn: [AdminApiMethod, PublicApiMethod, AdminApiOptionsMethod, PublicApiOptionsMethod]
     Properties:
       RestApiId: !Ref GraphQLApi
+      Description: !Sub "Deployment triggered at ${AWS::StackId}"
 
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
-      StageName: !Ref ProjectName
+      StageName: v1
       RestApiId: !Ref GraphQLApi
       DeploymentId: !Ref ApiDeployment
 
@@ -141,43 +135,110 @@ Resources:
     Type: AWS::ApiGateway::UsagePlan
     DependsOn: ApiStage
     Properties:
+      UsagePlanName: !Sub '${ProjectName}-Public-Usage-Plan'
+      Description: !Sub 'Usage plan for public clients'
+      Throttle: {BurstLimit: 50, RateLimit: 25}
       ApiStages:
         - ApiId: !Ref GraphQLApi
-          Stage: !Ref ProjectName
-      Description: !Sub Usage plan for the ${ProjectName} API
-      Throttle:
-        BurstLimit: 20
-        RateLimit: 10
+          ## THE FIX: This line provides the literal string name of the stage.
+          Stage: v1
 
   ApiKey:
     Type: AWS::ApiGateway::ApiKey
     Properties:
-      Name: !Sub ${ProjectName}-Key
+      Name: !Sub '${ProjectName}-Public-Key'
       Enabled: true
 
   ApiUsagePlanKey:
     Type: AWS::ApiGateway::UsagePlanKey
+    Properties: {KeyId: !Ref ApiKey, KeyType: API_KEY, UsagePlanId: !Ref ApiUsagePlan}
+
+  AdminFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !GetAtt GraphQLAdminFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/admin/graphql"}
+  PublicFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !GetAtt GraphQLPublicFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/public/graphql"}
+
+  # =================================================================
+  # == 4. FRONTEND INFRASTRUCTURE (Unchanged)
+  # =================================================================
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
     Properties:
-      KeyId: !Ref ApiKey
-      KeyType: API_KEY
-      UsagePlanId: !Ref ApiUsagePlan
+      UserPoolName: !Sub '${ProjectName}-user-pool'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy: {MinimumLength: 8, RequireLowercase: true, RequireNumbers: true, RequireSymbols: false, RequireUppercase: true}
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties: {ClientName: !Sub '${ProjectName}-web-client', UserPoolId: !Ref CognitoUserPool, GenerateSecret: false, ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]}
+  WebAppS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties: {BucketName: !Sub '${AWS::AccountId}-${ProjectName}-webapp-bucket', AccessControl: Private, PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}}
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties: {OriginAccessControlConfig: {Name: !Sub '${ProjectName}-oac-for-s3', OriginAccessControlOriginType: s3, SigningBehavior: always, SigningProtocol: sigv4}}
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub 'CDN for ${ProjectName}'
+        DefaultRootObject: index.html
+        Origins:
+          - Id: !Sub 'S3-${WebAppS3Bucket}'
+            DomainName: !GetAtt WebAppS3Bucket.DomainName
+            S3OriginConfig: {OriginAccessIdentity: ''}
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub 'S3-${WebAppS3Bucket}'
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        HttpVersion: http2and3
+        ViewerCertificate: {CloudFrontDefaultCertificate: true}
+        CustomErrorResponses:
+          - {ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html}
+          - {ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html}
+  WebAppS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebAppS3Bucket
+      PolicyDocument:
+        Statement:
+          - Sid: 'AllowCloudFrontServicePrincipal'
+            Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${WebAppS3Bucket}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
 
 Outputs:
-  GraphQLApiEndpoint:
-    Description: "The endpoint URL for the GraphQL API"
-    Value:
-      Fn::Join:
-        - ''
-        - - 'https://'
-          - !Ref GraphQLApi
-          - '.execute-api.'
-          - !Ref 'AWS::Region'
-          - '.amazonaws.com/'
-          - !Ref ApiStage
-          - '/graphql'
-  ApiKeyId:
-    Description: "The ID of the API Key created for this stack"
+  AdminApiEndpoint:
+    Description: "The endpoint URL for the admin GraphQL API (requires Cognito JWT)"
+    Value: !Sub "https://*.execute-api.${AWS::Region}.amazonaws.com/v1/admin/graphql"
+  PublicApiEndpoint:
+    Description: "The endpoint URL for the public GraphQL API (requires API Key)"
+    Value: !Sub "https://*.execute-api.${AWS::Region}.amazonaws.com/v1/public/graphql"
+  PublicApiKey:
+    Description: "The API Key for public, non-authenticated clients."
     Value: !Ref ApiKey
-  LambdaFunctionName:
-    Description: "GraphQL Lambda Function Name"
-    Value: !Ref GraphQLFunction
+  UserPoolId:
+    Description: 'Cognito User Pool ID for admin web app .env file'
+    Value: !Ref CognitoUserPool
+  UserPoolClientId:
+    Description: 'Cognito User Pool Client ID for admin web app .env file'
+    Value: !Ref CognitoUserPoolClient
+  CloudFrontDomainName:
+    Description: 'Domain name of the CloudFront distribution for the admin web app'
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  WebAppS3BucketName:
+    Description: 'Name of the S3 bucket where the admin web app is deployed'
+    Value: !Ref WebAppS3Bucket
+  AWSRegion:
+    Description: "The AWS Region where the stack is deployed for admin web app .env file"
+    Value: !Ref AWS::Region
