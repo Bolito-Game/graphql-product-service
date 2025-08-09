@@ -204,4 +204,13 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+# Ignore node_modules directory
+node_modules/
+
+# Ignore .env files
+.env
+
+# Ignore IDE-specific files
+.vscode/
+
 # End of https://www.toptal.com/developers/gitignore/api/osx,node,linux,windows,sam
