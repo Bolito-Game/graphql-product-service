@@ -1,109 +1,184 @@
-# Defines the structure of a resolved product for a specific locale.
-type Product {
-  SKU: ID!
-  Category: String!
-  Category_Text: String!
-  Name: String!
-  Description: String
-  Image_URL: String
-  Status: String!
-  Last_Updated: String!
-  Quantity_In_Stock: Int!
-  Price: Float!
-  Currency: String!
+"""
+Defines the set of possible statuses for a product.
+"""
+enum ProductStatus {
+  "The product is available for sale."
+  ACTIVE
+  "The product is not currently available for sale."
+  INACTIVE
+  "The product is no longer being sold."
+  DISCONTINUED
 }
 
-# A paginated list of products, following connection patterns.
-# Includes the list of items for the current page and a token to fetch the next page.
-type ProductConnection {
-  items: [Product]!
+# ---------------------------------------------------------------- #
+
+"""
+Defines the structure of a localization for a product, containing
+language- and country-specific details.
+"""
+type Localization {
+  "Language code (e.g., 'en', 'es')."
+  lang: String!
+  "Country code (e.g., 'us', 'mx')."
+  country: String!
+  "The localized name of the product's category."
+  categoryText: String!
+  "The localized name of the product."
+  productName: String!
+  "A localized description of the product."
+  description: String
+  "The price in the local currency."
+  price: Float!
+  "The currency code (e.g., 'USD', 'MXN')."
+  currency: String!
+}
+
+# ---------------------------------------------------------------- #
+
+"""
+Defines the structure of a product.
+"""
+type Product {
+  "The unique identifier for the product (Stock Keeping Unit)."
+  sku: ID!
+  "The global, non-localized category key for the product."
+  category: String!
+  "A URL for the product's primary image."
+  imageUrl: String
+  "The current status of the product."
+  productStatus: ProductStatus!
+  "The number of units currently in stock."
+  quantityInStock: Int!
+  "A list of all available localizations for the product."
+  localizations: [Localization!]!
+}
+
+# ---------------------------------------------------------------- #
+
+"""
+A wrapper for paginated product lists, including the items
+and a token to fetch the next page.
+"""
+type PaginatedProducts {
+  "A list of products on the current page."
+  items: [Product!]!
+  "A token to pass to the next query to get the next page of results. Null if there are no more pages."
   nextToken: String
 }
 
-# Standardized error response for better client-side handling.
-type Error {
-  field: String
-  message: String!
-}
+# ---------------------------------------------------------------- #
+# Input Types for Mutations
+# ---------------------------------------------------------------- #
 
-# The response for a single product query, which can be a product or an error.
-type ProductResponse {
-  product: Product
-  errors: [Error!]
-}
-
-# The response for any mutation, indicating success or failure and returning the affected object.
-type MutationResponse {
-  success: Boolean!
-  product: Product
-  errors: [Error!]
-}
-
-# Input for providing localized data during creation or update.
+"""
+Input for creating or updating a localization. All fields are required.
+"""
 input LocalizationInput {
   lang: String!
   country: String!
-  Category_Text: String!
-  Name: String!
-  Description: String
-  Price: Float!
-  Currency: String!
+  categoryText: String!
+  productName: String!
+  description: String
+  price: Float!
+  currency: String!
 }
 
-# Input for creating a new product. SKU is required, as are initial localizations.
+"""
+Input for creating a new product.
+"""
 input CreateProductInput {
-  SKU: ID!
-  Category: String!
-  Image_URL: String
-  Status: String!
-  Quantity_In_Stock: Int!
+  sku: ID!
+  category: String!
+  imageUrl: String
+  productStatus: ProductStatus = ACTIVE
+  quantityInStock: Int!
   localizations: [LocalizationInput!]!
 }
 
-# Input for updating an existing product. SKU is required, all other fields are optional.
+"""
+Input for updating an existing product's core fields.
+SKU is required to identify the product. All other fields are optional.
+"""
 input UpdateProductInput {
-  SKU: ID!
-  Category: String
-  Image_URL: String
-  Status: String
-  Quantity_In_Stock: Int
-  # Use this to add or update specific localizations without affecting others.
-  localizations: [LocalizationInput!]
+  sku: ID!
+  category: String
+  imageUrl: String
+  productStatus: ProductStatus
+  quantityInStock: Int
 }
 
+# ---------------------------------------------------------------- #
+# Root Operation Types
+# ---------------------------------------------------------------- #
+
+"""
+Defines all the read operations available in the API.
+"""
 type Query {
   """
-  Fetches a single product by its SKU for a given language and country.
-  Defaults: lang="en", country="us"
+  Retrieves a single product by its SKU.
+  Returns the product with only the single, matching localization.
   """
-  getProductBySKU(SKU: ID!, lang: String = "en", country: String = "us"): ProductResponse
+  getProductBySku(sku: ID!, lang: String = "en", country: String = "us"): Product
 
   """
-  Fetches all products within a specific category, sorted by Category.
-  Defaults: lang="en", country="us"
+  Retrieves all products belonging to a specific category.
+  Returns each product with only the single, matching localization.
   """
-  getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product]!
+  getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!
 
   """
-  Fetches a paginated list of all products.
-  Defaults: lang="en", country="us", limit=20
+  Retrieves a paginated list of all products that have a specific localization.
+  Returns each product with only the single, matching localization.
   """
-  getAllProducts(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): ProductConnection!
+  getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
+
+  """
+  Retrieves a paginated list of all products with all of their localizations.
+  """
+  getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
 }
 
+# ---------------------------------------------------------------- #
+
+"""
+Defines all the write (Create, Update, Delete) operations.
+"""
 type Mutation {
   """
-  Creates a new product with all its initial localizations. Fails if SKU already exists.
+  Creates a new product along with its initial localizations.
+  Returns the newly created product.
   """
-  createProduct(input: CreateProductInput!): MutationResponse!
+  createProduct(input: CreateProductInput!): Product!
 
   """
-  Updates an existing product's master data or specific localizations.
+  Updates the core fields of an existing product.
+  To manage localizations, use addLocalization, updateLocalization, or removeLocalization.
+  Returns the updated product.
   """
-  updateProduct(input: UpdateProductInput!): MutationResponse!
+  updateProduct(input: UpdateProductInput!): Product!
 
   """
-  Deletes a product from the database using its SKU.
+  Deletes a product from the system using its SKU.
+  Returns the product that was deleted.
   """
-  deleteProduct(SKU: ID!): MutationResponse!
+  deleteProduct(sku: ID!): Product
+
+  """
+  Adds a new localization to an existing product.
+  Returns the product with the new localization added.
+  """
+  addLocalization(sku: ID!, localization: LocalizationInput!): Product!
+
+  """
+  Updates an existing localization on a product, identified by language and country.
+  Returns the product with the updated localization.
+  """
+  updateLocalization(sku: ID!, localization: LocalizationInput!): Product!
+
+  """
+  Removes a localization from a product.
+  Returns the product with the localization removed.
+  """
+  removeLocalization(sku: ID!, lang: String!, country: String!): Product!
 }
