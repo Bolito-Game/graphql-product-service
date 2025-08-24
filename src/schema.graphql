@@ -11,6 +11,63 @@ enum ProductStatus {
 }
 
 # ---------------------------------------------------------------- #
+# Category Types
+# ---------------------------------------------------------------- #
+
+"""
+A translated string for a category.
+"""
+type Translation {
+  "Language code (e.g., 'en', 'es')."
+  lang: String!
+  "The translated text for the category."
+  text: String!
+}
+
+"""
+Defines a category and its available translations.
+"""
+type Category {
+  "The unique identifier for the category (e.g., 'Electronics')."
+  category: ID!
+  "A list of all available translations for the category name."
+  translations: [Translation!]!
+}
+
+"""
+A wrapper for paginated category lists, including the items
+and a token to fetch the next page.
+"""
+type PaginatedCategories {
+  "A list of categories on the current page."
+  items: [Category!]!
+  "A token for fetching the next page of results."
+  nextToken: String
+}
+
+"""
+A category key with its text in a specific language.
+"""
+type CategoryTranslation {
+  "The unique identifier for the category."
+  category: ID!
+  "The category name in the requested language."
+  text: String!
+}
+
+"""
+A paginated list of category translations for a specific language.
+"""
+type PaginatedCategoryTranslations {
+  "A list of category translations on the current page."
+  items: [CategoryTranslation!]!
+  "A token for fetching the next page of results."
+  nextToken: String
+}
+
+# ---------------------------------------------------------------- #
+# Product Types
+# ---------------------------------------------------------------- #
 
 """
 Defines the structure of a localization for a product, containing
@@ -21,8 +78,6 @@ type Localization {
   lang: String!
   "Country code (e.g., 'us', 'mx')."
   country: String!
-  "The localized name of the product's category."
-  categoryText: String!
   "The localized name of the product."
   productName: String!
   "A localized description of the product."
@@ -32,8 +87,6 @@ type Localization {
   "The currency code (e.g., 'USD', 'MXN')."
   currency: String!
 }
-
-# ---------------------------------------------------------------- #
 
 """
 Defines the structure of a product.
@@ -53,8 +106,6 @@ type Product {
   localizations: [Localization!]!
 }
 
-# ---------------------------------------------------------------- #
-
 """
 A wrapper for paginated product lists, including the items
 and a token to fetch the next page.
@@ -67,8 +118,24 @@ type PaginatedProducts {
 }
 
 # ---------------------------------------------------------------- #
-# Input Types for Mutations
+# Input Types
 # ---------------------------------------------------------------- #
+
+"""
+Input for creating or updating a translation.
+"""
+input TranslationInput {
+  lang: String!
+  text: String!
+}
+
+"""
+Input for creating a new category.
+"""
+input CreateCategoryInput {
+  category: ID!
+  translations: [TranslationInput!]!
+}
 
 """
 Input for creating or updating a localization. All fields are required.
@@ -76,7 +143,6 @@ Input for creating or updating a localization. All fields are required.
 input LocalizationInput {
   lang: String!
   country: String!
-  categoryText: String!
   productName: String!
   description: String
   price: Float!
@@ -115,70 +181,63 @@ input UpdateProductInput {
 Defines all the read operations available in the API.
 """
 type Query {
-  """
-  Retrieves a single product by its SKU.
-  Returns the product with only the single, matching localization.
-  """
+  # --- Product Queries ---
+  "Retrieves a single product by its SKU."
   getProductBySku(sku: ID!, lang: String = "en", country: String = "us"): Product
 
-  """
-  Retrieves all products belonging to a specific category.
-  Returns each product with only the single, matching localization.
-  """
+  "Retrieves all products belonging to a specific category."
   getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!
 
-  """
-  Retrieves a paginated list of all products that have a specific localization.
-  Returns each product with only the single, matching localization.
-  """
+  "Retrieves a paginated list of all products that have a specific localization."
   getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
 
-  """
-  Retrieves a paginated list of all products with all of their localizations.
-  """
+  "Retrieves a paginated list of all products with all of their localizations."
   getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
-}
 
-# ---------------------------------------------------------------- #
+  # --- Category Queries ---
+  "Retrieves a single category and all its translations by its key."
+  getCategory(category: ID!): Category
+
+  "Retrieves a paginated list of all categories with all their translations."
+  getAllCategories(limit: Int = 20, nextToken: String): PaginatedCategories
+
+  "Retrieves a paginated list of categories with their names in a specific language."
+  getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
+}
 
 """
 Defines all the write (Create, Update, Delete) operations.
 """
 type Mutation {
-  """
-  Creates a new product along with its initial localizations.
-  Returns the newly created product.
-  """
+  # --- Product Mutations ---
+  "Creates a new product along with its initial localizations."
   createProduct(input: CreateProductInput!): Product!
 
-  """
-  Updates the core fields of an existing product.
-  To manage localizations, use addLocalization, updateLocalization, or removeLocalization.
-  Returns the updated product.
-  """
+  "Updates the core fields of an existing product."
   updateProduct(input: UpdateProductInput!): Product!
 
-  """
-  Deletes a product from the system using its SKU.
-  Returns the product that was deleted.
-  """
+  "Deletes a product from the system using its SKU."
   deleteProduct(sku: ID!): Product
 
-  """
-  Adds a new localization to an existing product.
-  Returns the product with the new localization added.
-  """
+  "Adds a new localization to an existing product."
   addLocalization(sku: ID!, localization: LocalizationInput!): Product!
 
-  """
-  Updates an existing localization on a product, identified by language and country.
-  Returns the product with the updated localization.
-  """
+  "Updates an existing localization on a product."
   updateLocalization(sku: ID!, localization: LocalizationInput!): Product!
 
-  """
-  Removes a localization from a product.
-  Returns the product with the localization removed.
-  """
+  "Removes a localization from a product."
   removeLocalization(sku: ID!, lang: String!, country: String!): Product!
+
+  # --- Category Mutations ---
+  "Creates a new category with its initial translations."
+  createCategory(input: CreateCategoryInput!): Category!
+
+  "Deletes a category and all its translations."
+  deleteCategory(category: ID!): Category
+
+  "Adds or updates a translation for a given category."
+  upsertCategoryTranslation(category: ID!, translation: TranslationInput!): Category!
+
+  "Removes a translation from a category."
+  removeCategoryTranslation(category: ID!, lang: String!): Category!
 }

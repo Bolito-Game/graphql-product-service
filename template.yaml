@@ -2,15 +2,18 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   A unified stack for the GraphQL Product Service with dual-auth.
-  This version uses the explicit AWS::ApiGateway resource structure and corrects the ApiUsagePlan dependency.
+  This version uses the explicit AWS::ApiGateway resource structure.
 
 Parameters:
   ProjectName:
     Type: String
     Default: ProductApp
-  TableName:
+  CategoriesTableName:
     Type: String
-    Default: Products
+    Default: categories
+  ProductsTableName:
+    Type: String
+    Default: products
 
 Globals:
   Function:
@@ -27,14 +30,23 @@ Resources:
   ProductsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Ref TableName
-      AttributeDefinitions: [{AttributeName: SKU, AttributeType: S}, {AttributeName: Category, AttributeType: S}]
-      KeySchema: [{AttributeName: SKU, KeyType: HASH}]
+      TableName: !Ref ProductsTableName
+      AttributeDefinitions: [{AttributeName: sku, AttributeType: S}, {AttributeName: category, AttributeType: S}]
+      KeySchema: [{AttributeName: sku, KeyType: HASH}]
       BillingMode: PAY_PER_REQUEST
       GlobalSecondaryIndexes:
-        - IndexName: CategoryIndex
-          KeySchema: [{AttributeName: Category, KeyType: HASH}]
+        - IndexName: categoryIndex
+          KeySchema: [{AttributeName: category, KeyType: HASH}]
           Projection: {ProjectionType: ALL}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+
+  CategoriesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref CategoriesTableName
+      AttributeDefinitions: [{AttributeName: category, AttributeType: S}]
+      KeySchema: [{AttributeName: category, KeyType: HASH}]
+      BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
 
   # =================================================================
@@ -46,9 +58,13 @@ Resources:
       FunctionName: !Sub '${ProjectName}-GraphQL-Admin-Handler'
       CodeUri: src/
       Handler: admin.handler
-      Environment: {Variables: {TABLE_NAME: !Ref TableName}}
+      Environment: 
+        Variables:
+          PRODUCTS_TABLE_NAME: !Ref ProductsTableName
+          CATEGORIES_TABLE_NAME: !Ref CategoriesTableName
       Policies:
-        - DynamoDBCrudPolicy: {TableName: !Ref TableName}
+        - DynamoDBCrudPolicy: {TableName: !Ref ProductsTableName}
+        - DynamoDBCrudPolicy: {TableName: !Ref CategoriesTableName}
 
   GraphQLPublicFunction:
     Type: AWS::Serverless::Function
@@ -56,9 +72,13 @@ Resources:
       FunctionName: !Sub '${ProjectName}-GraphQL-Public-Handler'
       CodeUri: src/
       Handler: public.handler
-      Environment: {Variables: {TABLE_NAME: !Ref TableName}}
+      Environment: 
+        Variables:
+          PRODUCTS_TABLE_NAME: !Ref ProductsTableName
+          CATEGORIES_TABLE_NAME: !Ref CategoriesTableName
       Policies:
-        - DynamoDBReadPolicy: {TableName: !Ref TableName}
+        - DynamoDBReadPolicy: {TableName: !Ref ProductsTableName}
+        - DynamoDBReadPolicy: {TableName: !Ref CategoriesTableName}
 
   # =================================================================
   # == 3. API GATEWAY (EXPLICIT RESOURCE DEFINITIONS)
@@ -140,7 +160,6 @@ Resources:
       Throttle: {BurstLimit: 50, RateLimit: 25}
       ApiStages:
         - ApiId: !Ref GraphQLApi
-          ## THE FIX: This line provides the literal string name of the stage.
           Stage: v1
 
   ApiKey:
@@ -161,7 +180,7 @@ Resources:
     Properties: {FunctionName: !GetAtt GraphQLPublicFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/public/graphql"}
 
   # =================================================================
-  # == 4. FRONTEND INFRASTRUCTURE (Unchanged)
+  # == 4. FRONTEND INFRASTRUCTURE
   # =================================================================
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
