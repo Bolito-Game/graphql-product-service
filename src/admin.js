@@ -347,22 +347,24 @@ const adminRoot = {
     }
   },
 
-  upsertCategoryTranslation: async ({ category, translation }) => {
-    const { lang, text } = translation;
+  upsertCategoryTranslation: async ({ input }) => {
+    const translationsMap = input.translations.reduce((acc, { lang, text }) => {
+      acc[lang] = text;
+      return acc;
+    }, {});
+
+    const item = { category: input.category, translations: translationsMap };
     const params = {
       TableName: CATEGORIES_TABLE_NAME,
-      Key: { category },
-      UpdateExpression: "SET translations.#lang = :text",
-      ExpressionAttributeNames: { "#lang": lang },
-      ExpressionAttributeValues: { ":text": text },
-      ReturnValues: "ALL_NEW",
+      Item: item,
     };
+
     try {
-      const { Attributes } = await docClient.send(new UpdateCommand(params));
-      return resolveCategory(Attributes);
+      await docClient.send(new PutCommand(params));
+      return resolveCategory(item);
     } catch (error) {
-      console.error(`DynamoDB upsertCategoryTranslation Error for ${category}:`, error);
-      throw new Error("Could not upsert category translation.");
+      console.error("DynamoDB upsertCategoryTranslation Error:", error);
+      throw new Error("Could not update or create the category.");
     }
   },
 

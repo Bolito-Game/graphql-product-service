@@ -138,6 +138,14 @@ input CreateCategoryInput {
 }
 
 """
+Input for upsert a category.
+"""
+input UpsertCategoryTranslationInput {
+  category: ID!
+  translations: [TranslationInput!]!
+}
+
+"""
 Input for creating or updating a localization. All fields are required.
 """
 input LocalizationInput {
@@ -236,7 +244,7 @@ type Mutation {
   deleteCategory(category: ID!): Category
 
   "Adds or updates a translation for a given category."
-  upsertCategoryTranslation(category: ID!, translation: TranslationInput!): Category!
+  upsertCategoryTranslation(input: UpsertCategoryTranslationInput!): Category!
 
   "Removes a translation from a category."
   removeCategoryTranslation(category: ID!, lang: String!): Category!
