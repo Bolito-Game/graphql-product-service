@@ -414,7 +414,7 @@ exports.handler = async (event) => {
     console.error("Critical error in Lambda handler:", error);
     return {
       statusCode: 400,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ errors: [{ message: error.message || "Invalid GraphQL request." }] }),
     };
   }

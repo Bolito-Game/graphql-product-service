@@ -137,6 +137,24 @@ Resources:
     Type: AWS::ApiGateway::Method
     Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref PublicApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
 
+  GatewayResponseDefault4XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+
+  GatewayResponseDefault5XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn: [AdminApiMethod, PublicApiMethod, AdminApiOptionsMethod, PublicApiOptionsMethod]
