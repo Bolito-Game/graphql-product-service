@@ -40,8 +40,41 @@ const resolveLocalizations = (item, lang, country) => {
   if (lang && country) {
     const key = `${lang}-${country}`;
     const specificLoc = item.localizations?.[key];
+
     if (specificLoc) {
       localizationsArray.push({ lang, country, ...specificLoc });
+    } else {
+      const localizations = item.localizations || {};
+      const allKeys = Object.keys(localizations);
+
+      const langMatchKey = allKeys.find(k => k.startsWith(`${lang}-`));
+
+      if (langMatchKey) {
+        const [matchLang, matchCountry] = langMatchKey.split('-');
+        localizationsArray.push({
+          lang: matchLang,
+          country: matchCountry,
+          ...localizations[langMatchKey],
+        });
+      }
+      
+      else if (localizations['en-us']) {
+        localizationsArray.push({
+          lang: 'en',
+          country: 'us',
+          ...localizations['en-us'],
+        });
+      }
+      
+      else if (allKeys.length > 0) {
+        const firstKey = allKeys[0];
+        const [firstLang, firstCountry] = firstKey.split('-');
+        localizationsArray.push({
+          lang: firstLang,
+          country: firstCountry,
+          ...localizations[firstKey],
+        });
+      }
     }
   } else {
     localizationsArray = Object.entries(item.localizations || {}).map(([key, locData]) => {

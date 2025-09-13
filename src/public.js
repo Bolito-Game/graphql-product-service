@@ -23,18 +23,57 @@ const schema = buildSchema(schemaString);
 // --- Helper Functions ---
 
 /**
- * Formats a DynamoDB product item into a GraphQL Product type.
+ * Formats a DynamoDB product item into a GraphQL Product type, converting the localizations map to an array.
+ * @param {object} item - The item retrieved from DynamoDB.
+ * @param {string} [lang] - Optional language code to filter localizations.
+ * @param {string} [country] - Optional country code to filter localizations.
+ * @returns {object|null} A GraphQL Product object or null if the item is invalid.
  */
 const resolveLocalizations = (item, lang, country) => {
   if (!item) {
     return null;
   }
+
   let localizationsArray = [];
+
   if (lang && country) {
     const key = `${lang}-${country}`;
     const specificLoc = item.localizations?.[key];
+
     if (specificLoc) {
       localizationsArray.push({ lang, country, ...specificLoc });
+    } else {
+      const localizations = item.localizations || {};
+      const allKeys = Object.keys(localizations);
+
+      const langMatchKey = allKeys.find(k => k.startsWith(`${lang}-`));
+
+      if (langMatchKey) {
+        const [matchLang, matchCountry] = langMatchKey.split('-');
+        localizationsArray.push({
+          lang: matchLang,
+          country: matchCountry,
+          ...localizations[langMatchKey],
+        });
+      }
+      
+      else if (localizations['en-us']) {
+        localizationsArray.push({
+          lang: 'en',
+          country: 'us',
+          ...localizations['en-us'],
+        });
+      }
+      
+      else if (allKeys.length > 0) {
+        const firstKey = allKeys[0];
+        const [firstLang, firstCountry] = firstKey.split('-');
+        localizationsArray.push({
+          lang: firstLang,
+          country: firstCountry,
+          ...localizations[firstKey],
+        });
+      }
     }
   } else {
     localizationsArray = Object.entries(item.localizations || {}).map(([key, locData]) => {
@@ -42,7 +81,11 @@ const resolveLocalizations = (item, lang, country) => {
       return { lang, country, ...locData };
     });
   }
-  return { ...item, localizations: localizationsArray };
+
+  return {
+    ...item,
+    localizations: localizationsArray,
+  };
 };
 
 /**
