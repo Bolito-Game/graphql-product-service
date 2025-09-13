@@ -24,69 +24,35 @@ const schemaString = fs.readFileSync(path.join(__dirname, "schema.graphql"), "ut
 const schema = buildSchema(schemaString);
 
 /**
- * Formats a DynamoDB product item into a GraphQL Product type. It selects a single
- * best-fit localization based on the provided lang and country, with specific fallback rules.
- *
+ * Formats a DynamoDB product item into a GraphQL Product type, converting the localizations map to an array.
  * @param {object} item - The item retrieved from DynamoDB.
- * @param {string} [lang] - The desired language code (e.g., "en").
- * @param {string} [country] - The desired country code (e.g., "us").
- * @returns {object|null} A GraphQL Product object with a single localization, or null if the item is invalid.
+ * @param {string} [lang] - Optional language code to filter localizations.
+ * @param {string} [country] - Optional country code to filter localizations.
+ * @returns {object|null} A GraphQL Product object or null if the item is invalid.
  */
 const resolveLocalizations = (item, lang, country) => {
-  // Rule: If there is no item, return null.
   if (!item) {
     return null;
   }
 
-  // Helper to safely access localizations, defaulting to an empty object if undefined.
-  const localizations = item.localizations || {};
-  const allLocalizationKeys = Object.keys(localizations);
-  let selectedKey = null;
+  let localizationsArray = [];
 
-  // Rule 1: Look for an exact "lang-country" match.
-  const exactKey = `${lang}-${country}`;
-  if (localizations[exactKey]) {
-    selectedKey = exactKey;
-  }
-
-  // Rule 2: If no exact match, find any key with the same language.
-  if (!selectedKey && lang) {
-    const langMatches = allLocalizationKeys.filter(key => key.startsWith(`${lang}-`));
-
-    if (langMatches.length > 0) {
-      // Prioritize "lang-us" if multiple language matches exist.
-      const usKey = `${lang}-us`;
-      if (langMatches.includes(usKey)) {
-        selectedKey = usKey;
-      } else {
-        // Otherwise, use the first language match found.
-        selectedKey = langMatches[0];
-      }
+  if (lang && country) {
+    const key = `${lang}-${country}`;
+    const specificLoc = item.localizations?.[key];
+    if (specificLoc) {
+      localizationsArray.push({ lang, country, ...specificLoc });
     }
-  }
-
-  // Rule 3: If still no match, use "en-us" as the default.
-  if (!selectedKey && localizations['en-us']) {
-    selectedKey = 'en-us';
-  }
-  
-  // Rule 4: If "en-us" is not found, use the very first localization in the response.
-  if (!selectedKey && allLocalizationKeys.length > 0) {
-    selectedKey = allLocalizationKeys[0];
-  }
-
-  let finalLocalizations = [];
-  if (selectedKey) {
-    const [selectedLang, selectedCountry] = selectedKey.split('-');
-    finalLocalizations.push({
-      lang: selectedLang,
-      country: selectedCountry,
-      ...localizations[selectedKey],
+  } else {
+    localizationsArray = Object.entries(item.localizations || {}).map(([key, locData]) => {
+      const [lang, country] = key.split('-');
+      return { lang, country, ...locData };
     });
   }
+
   return {
     ...item,
-    localizations: finalLocalizations,
+    localizations: localizationsArray,
   };
 };
 
@@ -209,47 +175,25 @@ const adminRoot = {
     const params = {
       TableName: CATEGORIES_TABLE_NAME,
       Limit: limit || 20,
+      FilterExpression: "attribute_exists(translations.#lang)",
+      ExpressionAttributeNames: { "#lang": lang },
     };
-
-    if (lang) {
-      params.FilterExpression = "attribute_exists(translations.#primary) OR attribute_exists(translations.#fallback)";
-      params.ExpressionAttributeNames = {
-        "#primary": lang,
-        "#fallback": "en",
-      };
-    } else {
-      params.FilterExpression = "attribute_exists(translations.#fallback)";
-      params.ExpressionAttributeNames = {
-        "#fallback": "en",
-      };
-    }
-
     if (nextToken) {
       params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
     }
-    
     try {
       const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
       const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
-
-      const translatedItems = Items.map(item => {
-        const text =
-          (lang && item.translations[lang]) ||
-          item.translations['en'] ||
-          Object.values(item.translations)[0] || item.category;
-
-        return {
-          category: item.category,
-          text: text,
-        };
-      });
-
+      const translatedItems = Items.map(item => ({
+        category: item.category,
+        text: item.translations[lang],
+      }));
       return {
         items: translatedItems,
         nextToken: newNextToken,
       };
     } catch (error) {
-      console.error(`DynamoDB Error scanning categories:`, error);
+      console.error(`DynamoDB Error scanning categories by language ${lang}:`, error);
       return { items: [], nextToken: null };
     }
   },
