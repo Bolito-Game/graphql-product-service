@@ -138,13 +138,8 @@ const adminRoot = {
   },
 
   getAllProductsByLocalization: async ({ lang, country, limit, nextToken }) => {
-    const key = `${lang}-${country}`;
-    const params = {
-      TableName: PRODUCTS_TABLE_NAME,
-      Limit: limit || 20,
-      FilterExpression: 'attribute_exists(localizations.#key)',
-      ExpressionAttributeNames: { '#key': key },
-    };
+    console.log(`Querying products for localization: ${lang}-${country}`);
+    const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
     if (nextToken) {
       params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
     }
@@ -205,31 +200,26 @@ const adminRoot = {
   },
 
   getAllCategoriesByLanguage: async ({ lang, limit, nextToken }) => {
-    const params = {
-      TableName: CATEGORIES_TABLE_NAME,
-      Limit: limit || 20,
-      FilterExpression: "attribute_exists(translations.#lang)",
-      ExpressionAttributeNames: { "#lang": lang },
-    };
-    if (nextToken) {
-      params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
-    }
-    try {
-      const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-      const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
-      const translatedItems = Items.map(item => ({
-        category: item.category,
-        text: item.translations[lang],
-      }));
-      return {
-        items: translatedItems,
-        nextToken: newNextToken,
-      };
-    } catch (error) {
-      console.error(`DynamoDB Error scanning categories by language ${lang}:`, error);
-      return { items: [], nextToken: null };
-    }
-  },
+      const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
+      if (nextToken) {
+        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+      }
+      try {
+        const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
+        const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+        const translatedItems = Items.map(item => ({
+          category: item.category,
+          text: item.translations[lang] || item.category,
+        }));
+        return {
+          items: translatedItems,
+          nextToken: newNextToken,
+        };
+      } catch (error) {
+        console.error(`DynamoDB Error scanning categories by language ${lang}:`, error);
+        return { items: [], nextToken: null };
+      }
+    },
 
   createProduct: async ({ input }) => {
     const localizationsMap = input.localizations.reduce((acc, loc) => {

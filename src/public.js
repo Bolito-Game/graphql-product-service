@@ -131,13 +131,8 @@ const readOnlyRoot = {
       }
     },
     getAllProductsByLocalization: async ({ lang, country, limit, nextToken }) => {
-      const key = `${lang}-${country}`;
-      const params = {
-        TableName: PRODUCTS_TABLE_NAME,
-        Limit: limit || 20,
-        FilterExpression: 'attribute_exists(localizations.#key)',
-        ExpressionAttributeNames: { '#key': key },
-      };
+      console.log(`Querying products for localization: ${lang}-${country}`);
+      const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
         params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
       }
@@ -194,12 +189,7 @@ const readOnlyRoot = {
       }
     },
     getAllCategoriesByLanguage: async ({ lang, limit, nextToken }) => {
-      const params = {
-        TableName: CATEGORIES_TABLE_NAME,
-        Limit: limit || 20,
-        FilterExpression: "attribute_exists(translations.#lang)",
-        ExpressionAttributeNames: { "#lang": lang },
-      };
+      const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
         params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
       }
@@ -208,7 +198,7 @@ const readOnlyRoot = {
         const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
         const translatedItems = Items.map(item => ({
           category: item.category,
-          text: item.translations[lang],
+          text: item.translations[lang] || item.category,
         }));
         return {
           items: translatedItems,
