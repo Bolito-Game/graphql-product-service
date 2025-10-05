@@ -5,7 +5,8 @@ const {
   GetCommand,
   QueryCommand,
   ScanCommand,
-} = require("@aws-sdk/lib-dynamodb"); // Removed write commands
+  BatchGetCommand,
+} = require("@aws-sdk/lib-dynamodb");
 const fs = require("fs");
 const path = require("path");
 
@@ -17,7 +18,10 @@ const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
 const CATEGORY_GSI_NAME = "categoryIndex";
 
 // --- Load GraphQL Schema ---
-const schemaString = fs.readFileSync(path.join(__dirname, "schema.graphql"), "utf8");
+const schemaString = fs.readFileSync(
+  path.join(__dirname, "schema.graphql"),
+  "utf8"
+);
 const schema = buildSchema(schemaString);
 
 // --- Helper Functions ---
@@ -46,28 +50,24 @@ const resolveLocalizations = (item, lang, country) => {
       const localizations = item.localizations || {};
       const allKeys = Object.keys(localizations);
 
-      const langMatchKey = allKeys.find(k => k.startsWith(`${lang}-`));
+      const langMatchKey = allKeys.find((k) => k.startsWith(`${lang}-`));
 
       if (langMatchKey) {
-        const [matchLang, matchCountry] = langMatchKey.split('-');
+        const [matchLang, matchCountry] = langMatchKey.split("-");
         localizationsArray.push({
           lang: matchLang,
           country: matchCountry,
           ...localizations[langMatchKey],
         });
-      }
-      
-      else if (localizations['en-us']) {
+      } else if (localizations["en-us"]) {
         localizationsArray.push({
-          lang: 'en',
-          country: 'us',
-          ...localizations['en-us'],
+          lang: "en",
+          country: "us",
+          ...localizations["en-us"],
         });
-      }
-      
-      else if (allKeys.length > 0) {
+      } else if (allKeys.length > 0) {
         const firstKey = allKeys[0];
-        const [firstLang, firstCountry] = firstKey.split('-');
+        const [firstLang, firstCountry] = firstKey.split("-");
         localizationsArray.push({
           lang: firstLang,
           country: firstCountry,
@@ -76,10 +76,12 @@ const resolveLocalizations = (item, lang, country) => {
       }
     }
   } else {
-    localizationsArray = Object.entries(item.localizations || {}).map(([key, locData]) => {
-      const [lang, country] = key.split('-');
-      return { lang, country, ...locData };
-    });
+    localizationsArray = Object.entries(item.localizations || {}).map(
+      ([key, locData]) => {
+        const [lang, country] = key.split("-");
+        return { lang, country, ...locData };
+      }
+    );
   }
 
   return {
@@ -95,66 +97,87 @@ const resolveCategory = (item) => {
   if (!item) {
     return null;
   }
-  const translationsArray = Object.entries(item.translations || {}).map(([lang, text]) => ({
-    lang,
-    text,
-  }));
+  const translationsArray = Object.entries(item.translations || {}).map(
+    ([lang, text]) => ({
+      lang,
+      text,
+    })
+  );
   return { ...item, translations: translationsArray };
 };
 
 // --- Root Resolvers (Read-Only) ---
 const readOnlyRoot = {
   Query: {
-    getProductBySku: async ({ sku, lang, country }) => {
-      const params = { TableName: PRODUCTS_TABLE_NAME, Key: { sku } };
-      try {
-        const { Item } = await docClient.send(new GetCommand(params));
-        return resolveLocalizations(Item, lang, country);
-      } catch (error) {
-        console.error(`DynamoDB Error getting product SKU ${sku}:`, error);
-        return null;
-      }
-    },
-    getProductsByCategory: async ({ category, lang, country }) => {
-      const params = {
-        TableName: PRODUCTS_TABLE_NAME,
-        IndexName: CATEGORY_GSI_NAME,
-        KeyConditionExpression: "category = :category",
-        ExpressionAttributeValues: { ":category": category },
-      };
-      try {
-        const { Items } = await docClient.send(new QueryCommand(params));
-        return Items.map((item) => resolveLocalizations(item, lang, country));
-      } catch (error) {
-        console.error(`DynamoDB Error querying category ${category}:`, error);
+    getProductsBySku: async ({ skus, lang, country }) => {
+      if (!skus || skus.length === 0) {
         return [];
       }
+      const keys = skus.map((sku) => ({ sku }));
+      const params = {
+        RequestItems: {
+          [PRODUCTS_TABLE_NAME]: {
+            Keys: keys,
+          },
+        },
+      };
+
+      try {
+        const { Responses } = await docClient.send(new BatchGetCommand(params));
+        const items = Responses[PRODUCTS_TABLE_NAME] || [];
+        return items.map((item) => resolveLocalizations(item, lang, country));
+      } catch (error) {
+        console.error(`DynamoDB Error getting products by SKUs:`, error);
+        return []; // Return empty array on error
+      }
     },
-    getAllProductsByLocalization: async ({ lang, country, limit, nextToken }) => {
+    getAllProductsByLocalization: async ({
+      lang,
+      country,
+      limit,
+      nextToken,
+    }) => {
       console.log(`Querying products for localization: ${lang}-${country}`);
       const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
-        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
       }
       try {
-        const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-        const resolvedItems = Items.map((item) => resolveLocalizations(item, lang, country));
-        const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new ScanCommand(params)
+        );
+        const resolvedItems = Items.map((item) =>
+          resolveLocalizations(item, lang, country)
+        );
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
         return { items: resolvedItems, nextToken: newNextToken };
       } catch (error) {
-        console.error(`DynamoDB Error scanning for localization ${key}:`, error);
+        console.error(
+          `DynamoDB Error scanning for localization ${key}:`,
+          error
+        );
         return { items: [], nextToken: null };
       }
     },
     getAllProducts: async ({ limit, nextToken }) => {
       const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
-        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
       }
       try {
-        const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new ScanCommand(params)
+        );
         const resolvedItems = Items.map((item) => resolveLocalizations(item));
-        const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
         return { items: resolvedItems, nextToken: newNextToken };
       } catch (error) {
         console.error("DynamoDB Error in getAllProducts:", error);
@@ -174,11 +197,17 @@ const readOnlyRoot = {
     getAllCategories: async ({ limit, nextToken }) => {
       const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
-        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
       }
       try {
-        const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-        const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new ScanCommand(params)
+        );
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
         return {
           items: Items.map(resolveCategory),
           nextToken: newNextToken,
@@ -191,12 +220,18 @@ const readOnlyRoot = {
     getAllCategoriesByLanguage: async ({ lang, limit, nextToken }) => {
       const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
-        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
       }
       try {
-        const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-        const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
-        const translatedItems = Items.map(item => ({
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new ScanCommand(params)
+        );
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
+        const translatedItems = Items.map((item) => ({
           category: item.category,
           text: item.translations[lang] || item.category,
         }));
@@ -205,7 +240,10 @@ const readOnlyRoot = {
           nextToken: newNextToken,
         };
       } catch (error) {
-        console.error(`DynamoDB Error scanning categories by language ${lang}:`, error);
+        console.error(
+          `DynamoDB Error scanning categories by language ${lang}:`,
+          error
+        );
         return { items: [], nextToken: null };
       }
     },
@@ -218,11 +256,14 @@ exports.handler = async (event) => {
     const { query, variables, operationName } = JSON.parse(event.body);
 
     // Safeguard to block mutations if they appear in the query string
-    const { definitions } = require('graphql/language/parser').parse(query);
-    const isMutation = definitions.some(def => def.kind === 'OperationDefinition' && def.operation === 'mutation');
-    
+    const { definitions } = require("graphql/language/parser").parse(query);
+    const isMutation = definitions.some(
+      (def) =>
+        def.kind === "OperationDefinition" && def.operation === "mutation"
+    );
+
     if (isMutation) {
-        throw new Error("Mutations are not allowed in this read-only endpoint.");
+      throw new Error("Mutations are not allowed in this read-only endpoint.");
     }
 
     const result = await graphql({
@@ -238,7 +279,10 @@ exports.handler = async (event) => {
     }
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
       body: JSON.stringify(result),
     };
   } catch (error) {
@@ -246,7 +290,9 @@ exports.handler = async (event) => {
     return {
       statusCode: 400,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ errors: [{ message: error.message || "Invalid GraphQL request." }] }),
+      body: JSON.stringify({
+        errors: [{ message: error.message || "Invalid GraphQL request." }],
+      }),
     };
   }
 };

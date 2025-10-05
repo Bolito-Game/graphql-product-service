@@ -190,8 +190,8 @@ Defines all the read operations available in the API.
 """
 type Query {
   # --- Product Queries ---
-  "Retrieves a single product by its SKU."
-  getProductBySku(sku: ID!, lang: String = "en", country: String = "us"): Product
+  "Retrieves a collection of products by their SKUs."
+  getProductsBySku(skus: [ID!]!, lang: String = "en", country: String = "us"): [Product]
 
   "Retrieves all products belonging to a specific category."
   getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!

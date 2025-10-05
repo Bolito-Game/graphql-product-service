@@ -1,13 +1,14 @@
 const { graphql, buildSchema } = require("graphql");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
-  DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-  UpdateCommand,
-  DeleteCommand,
-  QueryCommand,
-  ScanCommand,
+ DynamoDBDocumentClient,
+ GetCommand,
+ PutCommand,
+ UpdateCommand,
+ DeleteCommand,
+ QueryCommand,
+ ScanCommand,
+ BatchGetCommand, 
 } = require("@aws-sdk/lib-dynamodb");
 const fs = require("fs");
 const path = require("path");
@@ -110,14 +111,26 @@ const resolveCategory = (item) => {
 
 // Root resolvers for GraphQL operations
 const adminRoot = {
-  getProductBySku: async ({ sku, lang, country }) => {
-    const params = { TableName: PRODUCTS_TABLE_NAME, Key: { sku } };
+  getProductsBySku: async ({ skus, lang, country }) => {
+    if (!skus || skus.length === 0) {
+      return [];
+    }
+    const keys = skus.map((sku) => ({ sku }));
+    const params = {
+      RequestItems: {
+        [PRODUCTS_TABLE_NAME]: {
+          Keys: keys,
+        },
+      },
+    };
+
     try {
-      const { Item } = await docClient.send(new GetCommand(params));
-      return resolveLocalizations(Item, lang, country);
+      const { Responses } = await docClient.send(new BatchGetCommand(params));
+      const items = Responses[PRODUCTS_TABLE_NAME] || [];
+      return items.map((item) => resolveLocalizations(item, lang, country));
     } catch (error) {
-      console.error(`DynamoDB Error getting product SKU ${sku}:`, error);
-      return null;
+      console.error(`DynamoDB Error getting products by SKUs:`, error);
+      return []; // Return empty array on error
     }
   },
 
@@ -141,12 +154,20 @@ const adminRoot = {
     console.log(`Querying products for localization: ${lang}-${country}`);
     const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
     if (nextToken) {
-      params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
     }
     try {
-      const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-      const resolvedItems = Items.map((item) => resolveLocalizations(item, lang, country));
-      const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new ScanCommand(params)
+      );
+      const resolvedItems = Items.map((item) =>
+        resolveLocalizations(item, lang, country)
+      );
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
       return { items: resolvedItems, nextToken: newNextToken };
     } catch (error) {
       console.error(`DynamoDB Error scanning for localization ${key}:`, error);
@@ -157,12 +178,18 @@ const adminRoot = {
   getAllProducts: async ({ limit, nextToken }) => {
     const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
     if (nextToken) {
-      params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
     }
     try {
-      const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new ScanCommand(params)
+      );
       const resolvedItems = Items.map((item) => resolveLocalizations(item));
-      const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
       return { items: resolvedItems, nextToken: newNextToken };
     } catch (error) {
       console.error("DynamoDB Error in getAllProducts:", error);
@@ -184,11 +211,17 @@ const adminRoot = {
   getAllCategories: async ({ limit, nextToken }) => {
     const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
     if (nextToken) {
-      params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
     }
     try {
-      const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-      const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new ScanCommand(params)
+      );
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
       return {
         items: Items.map(resolveCategory),
         nextToken: newNextToken,
@@ -200,26 +233,35 @@ const adminRoot = {
   },
 
   getAllCategoriesByLanguage: async ({ lang, limit, nextToken }) => {
-      const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
-      if (nextToken) {
-        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, "base64").toString("utf8"));
-      }
-      try {
-        const { Items, LastEvaluatedKey } = await docClient.send(new ScanCommand(params));
-        const newNextToken = LastEvaluatedKey ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64") : null;
-        const translatedItems = Items.map(item => ({
-          category: item.category,
-          text: item.translations[lang] || item.category,
-        }));
-        return {
-          items: translatedItems,
-          nextToken: newNextToken,
-        };
-      } catch (error) {
-        console.error(`DynamoDB Error scanning categories by language ${lang}:`, error);
-        return { items: [], nextToken: null };
-      }
-    },
+    const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
+    if (nextToken) {
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
+    }
+    try {
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new ScanCommand(params)
+      );
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
+      const translatedItems = Items.map((item) => ({
+        category: item.category,
+        text: item.translations[lang] || item.category,
+      }));
+      return {
+        items: translatedItems,
+        nextToken: newNextToken,
+      };
+    } catch (error) {
+      console.error(
+        `DynamoDB Error scanning categories by language ${lang}:`,
+        error
+      );
+      return { items: [], nextToken: null };
+    }
+  },
 
   createProduct: async ({ input }) => {
     const localizationsMap = input.localizations.reduce((acc, loc) => {
@@ -229,7 +271,11 @@ const adminRoot = {
     }, {});
 
     const item = { ...input, localizations: localizationsMap };
-    const params = { TableName: PRODUCTS_TABLE_NAME, Item: item, ConditionExpression: "attribute_not_exists(sku)" };
+    const params = {
+      TableName: PRODUCTS_TABLE_NAME,
+      Item: item,
+      ConditionExpression: "attribute_not_exists(sku)",
+    };
 
     try {
       await docClient.send(new PutCommand(params));
@@ -258,7 +304,9 @@ const adminRoot = {
     });
 
     if (updateExpressionParts.length === 0) {
-      throw new Error("Update input must contain at least one field to modify.");
+      throw new Error(
+        "Update input must contain at least one field to modify."
+      );
     }
 
     const params = {
@@ -280,7 +328,11 @@ const adminRoot = {
   },
 
   deleteProduct: async ({ sku }) => {
-    const params = { TableName: PRODUCTS_TABLE_NAME, Key: { sku }, ReturnValues: "ALL_OLD" };
+    const params = {
+      TableName: PRODUCTS_TABLE_NAME,
+      Key: { sku },
+      ReturnValues: "ALL_OLD",
+    };
     try {
       const { Attributes } = await docClient.send(new DeleteCommand(params));
       return resolveLocalizations(Attributes);
@@ -348,7 +400,9 @@ const adminRoot = {
       return resolveCategory(item);
     } catch (error) {
       if (error.name === "ConditionalCheckFailedException") {
-        throw new Error(`A category with key '${input.category}' already exists.`);
+        throw new Error(
+          `A category with key '${input.category}' already exists.`
+        );
       }
       console.error("DynamoDB createCategory Error:", error);
       throw new Error("Could not create the category.");
@@ -403,7 +457,10 @@ const adminRoot = {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
       return resolveCategory(Attributes);
     } catch (error) {
-      console.error(`DynamoDB removeCategoryTranslation Error for ${category}:`, error);
+      console.error(
+        `DynamoDB removeCategoryTranslation Error for ${category}:`,
+        error
+      );
       throw new Error("Could not remove category translation.");
     }
   },
