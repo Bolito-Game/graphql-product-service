@@ -131,6 +131,21 @@ const readOnlyRoot = {
         return []; // Return empty array on error
       }
     },
+    getProductsByCategory: async ({ category, lang, country }) => {
+      const params = {
+        TableName: PRODUCTS_TABLE_NAME,
+        IndexName: CATEGORY_GSI_NAME,
+        KeyConditionExpression: "category = :category",
+        ExpressionAttributeValues: { ":category": category },
+      };
+      try {
+        const { Items } = await docClient.send(new QueryCommand(params));
+        return Items.map((item) => resolveLocalizations(item, lang, country));
+      } catch (error) {
+        console.error(`DynamoDB Error querying category ${category}:`, error);
+        return [];
+      }
+    },
     getAllProductsByLocalization: async ({
       lang,
       country,

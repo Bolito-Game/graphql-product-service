@@ -342,27 +342,41 @@ const adminRoot = {
     }
   },
 
-  addLocalization: async ({ sku, localization }) => {
-    const { lang, country, ...locData } = localization;
-    const key = `${lang}-${country}`;
+  addLocalization: async ({ sku, localizations }) => {
+    const updateExpressionParts = [];
+    const expressionAttributeNames = {};
+    const expressionAttributeValues = {};
+
+    localizations.forEach((loc, index) => {
+      const { lang, country, ...locData } = loc;
+      const key = `${lang}-${country}`;
+      updateExpressionParts.push(`localizations.#key${index} = :loc${index}`);
+      expressionAttributeNames[`#key${index}`] = key;
+      expressionAttributeValues[`:loc${index}`] = locData;
+    });
+
     const params = {
       TableName: PRODUCTS_TABLE_NAME,
       Key: { sku },
-      UpdateExpression: "SET localizations.#key = :loc",
-      ExpressionAttributeNames: { "#key": key },
-      ExpressionAttributeValues: { ":loc": locData },
+      UpdateExpression: `SET ${updateExpressionParts.join(", ")}`,
+      ExpressionAttributeNames: expressionAttributeNames,
+      ExpressionAttributeValues: expressionAttributeValues,
       ReturnValues: "ALL_NEW",
     };
+
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB addLocalization Error for SKU ${sku}:`, error);
-      throw new Error("Could not add localization.");
+      throw new Error("Could not add localizations.");
     }
   },
 
-  updateLocalization: (args) => adminRoot.addLocalization(args),
+  updateLocalization: async ({ sku, localizations }) => {
+    // Reuse the same logic as addLocalization since it overwrites existing keys
+    return adminRoot.addLocalization({ sku, localizations });
+  },
 
   removeLocalization: async ({ sku, lang, country }) => {
     const key = `${lang}-${country}`;

@@ -227,11 +227,11 @@ type Mutation {
   "Deletes a product from the system using its SKU."
   deleteProduct(sku: ID!): Product
 
-  "Adds a new localization to an existing product."
-  addLocalization(sku: ID!, localization: LocalizationInput!): Product!
+  "Adds one or more localizations to an existing product."
+  addLocalization(sku: ID!, localizations: [LocalizationInput!]!): Product!
 
-  "Updates an existing localization on a product."
-  updateLocalization(sku: ID!, localization: LocalizationInput!): Product!
+  "Updates one or more existing localizations on a product."
+  updateLocalization(sku: ID!, localizations: [LocalizationInput!]!): Product!
 
   "Removes a localization from a product."
   removeLocalization(sku: ID!, lang: String!, country: String!): Product!

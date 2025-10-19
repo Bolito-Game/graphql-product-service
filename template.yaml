@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  A unified stack for the GraphQL Product Service with dual-auth.
+  A unified stack for the GraphQL Product Service with dual-auth and PayPal integration.
   This version uses the explicit AWS::ApiGateway resource structure.
 
 Parameters:
@@ -14,6 +14,18 @@ Parameters:
   ProductsTableName:
     Type: String
     Default: products
+  OrdersTableName:
+    Type: String
+    Default: orders
+  PayPalClientId:
+    Type: String
+    Description: PayPal Sandbox Client ID
+  PayPalClientSecret:
+    Type: String
+    Description: PayPal Sandbox Client Secret
+  PayPalWebhookId:
+    Type: String
+    Description: PayPal Sandbox Webhook ID
 
 Globals:
   Function:
@@ -49,6 +61,42 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
 
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref OrdersTableName
+      AttributeDefinitions: [{AttributeName: orderId, AttributeType: S}]
+      KeySchema: [{AttributeName: orderId, KeyType: HASH}]
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+
+  # =================================================================
+  # == SECRETS MANAGEMENT FOR PAYPAL
+  # =================================================================
+  PaypalClientIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ProjectName}/paypal/client-id'
+      Type: String
+      Value: !Ref PayPalClientId
+      Description: PayPal Sandbox Client ID
+
+  PaypalClientSecretParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ProjectName}/paypal/client-secret'
+      Type: String
+      Value: !Ref PayPalClientSecret
+      Description: PayPal Sandbox Client Secret
+
+  PaypalWebhookIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ProjectName}/paypal/webhook-id'
+      Type: String
+      Value: !Ref PayPalWebhookId
+      Description: PayPal Sandbox Webhook ID
+
   # =================================================================
   # == 2. LAMBDA FUNCTIONS
   # =================================================================
@@ -79,6 +127,78 @@ Resources:
       Policies:
         - DynamoDBReadPolicy: {TableName: !Ref ProductsTableName}
         - DynamoDBReadPolicy: {TableName: !Ref CategoriesTableName}
+
+  PaypalCreateOrderFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - PaypalClientIdParam
+      - PaypalClientSecretParam
+    Properties:
+      FunctionName: !Sub '${ProjectName}-Paypal-Create-Order'
+      CodeUri: src/
+      Handler: paypal/createOrder.handler
+      Environment: 
+        Variables:
+          PAYPAL_CLIENT_ID: !Ref PaypalClientIdParam
+          PAYPAL_CLIENT_SECRET: !Ref PaypalClientSecretParam
+          ORDERS_TABLE_NAME: !Ref OrdersTableName
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource:
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-id'
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-secret'
+
+  PaypalCaptureOrderFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - PaypalClientIdParam
+      - PaypalClientSecretParam
+    Properties:
+      FunctionName: !Sub '${ProjectName}-Paypal-Capture-Order'
+      CodeUri: src/
+      Handler: paypal/captureOrder.handler
+      Environment: 
+        Variables:
+          PAYPAL_CLIENT_ID: !Ref PaypalClientIdParam
+          PAYPAL_CLIENT_SECRET: !Ref PaypalClientSecretParam
+          ORDERS_TABLE_NAME: !Ref OrdersTableName
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource:
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-id'
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-secret'
+
+  PaypalWebhookFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - PaypalWebhookIdParam
+    Properties:
+      FunctionName: !Sub '${ProjectName}-Paypal-Webhook-Handler'
+      CodeUri: src/
+      Handler: paypal/webhook.handler
+      Environment: 
+        Variables:
+          PAYPAL_WEBHOOK_ID: !Ref PaypalWebhookIdParam
+          ORDERS_TABLE_NAME: !Ref OrdersTableName
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource:
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/webhook-id'
 
   # =================================================================
   # == 3. API GATEWAY (EXPLICIT RESOURCE DEFINITIONS)
@@ -130,12 +250,67 @@ Resources:
       ApiKeyRequired: true
       Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GraphQLPublicFunction.Arn}/invocations"}
 
+  PaypalApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PublicApiResourceParent, PathPart: paypal}
+
+  CreateOrderApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PaypalApiResource, PathPart: create-order}
+  CreateOrderApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResourceId: !Ref CreateOrderApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PaypalCreateOrderFunction.Arn}/invocations"}
+
+  CaptureOrderApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PaypalApiResource, PathPart: capture-order}
+  CaptureOrderApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResourceId: !Ref CaptureOrderApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PaypalCaptureOrderFunction.Arn}/invocations"}
+
+  WebhookApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PaypalApiResource, PathPart: webhook}
+  WebhookApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GraphQLApi
+      ResourceId: !Ref WebhookApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PaypalWebhookFunction.Arn}/invocations"}
+
   AdminApiOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref AdminApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
   PublicApiOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref PublicApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
+
+  CreateOrderApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref CreateOrderApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
+
+  CaptureOrderApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref CaptureOrderApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
+
+  WebhookApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref WebhookApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
 
   GatewayResponseDefault4XX:
     Type: AWS::ApiGateway::GatewayResponse
@@ -157,7 +332,7 @@ Resources:
 
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: [AdminApiMethod, PublicApiMethod, AdminApiOptionsMethod, PublicApiOptionsMethod]
+    DependsOn: [AdminApiMethod, PublicApiMethod, CreateOrderApiMethod, CaptureOrderApiMethod, WebhookApiMethod, AdminApiOptionsMethod, PublicApiOptionsMethod, CreateOrderApiOptionsMethod, CaptureOrderApiOptionsMethod, WebhookApiOptionsMethod]
     Properties:
       RestApiId: !Ref GraphQLApi
       Description: !Sub "Deployment triggered at ${AWS::StackId}"
@@ -196,6 +371,15 @@ Resources:
   PublicFunctionPermission:
     Type: AWS::Lambda::Permission
     Properties: {FunctionName: !GetAtt GraphQLPublicFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/public/graphql"}
+  PaypalCreateOrderPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !GetAtt PaypalCreateOrderFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/public/paypal/create-order"}
+  PaypalCaptureOrderPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !GetAtt PaypalCaptureOrderFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/public/paypal/capture-order"}
+  PaypalWebhookPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !GetAtt PaypalWebhookFunction.Arn, Action: lambda:InvokeFunction, Principal: apigateway.amazonaws.com, SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GraphQLApi}/*/POST/public/paypal/webhook"}
 
   # =================================================================
   # == 4. FRONTEND INFRASTRUCTURE
@@ -257,12 +441,12 @@ Resources:
 Outputs:
   AdminApiEndpoint:
     Description: "The endpoint URL for the admin GraphQL API (requires Cognito JWT)"
-    Value: !Sub "https://*.execute-api.${AWS::Region}.amazonaws.com/v1/admin/graphql"
+    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/admin/graphql"
   PublicApiEndpoint:
     Description: "The endpoint URL for the public GraphQL API (requires API Key)"
-    Value: !Sub "https://*.execute-api.${AWS::Region}.amazonaws.com/v1/public/graphql"
+    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/graphql"
   PublicApiKey:
-    Description: "The API Key for public, non-authenticated clients."
+    Description: "The ID of the API Key for public, non-authenticated clients (retrieve the key value from API Gateway console or CLI)."
     Value: !Ref ApiKey
   UserPoolId:
     Description: 'Cognito User Pool ID for admin web app .env file'
