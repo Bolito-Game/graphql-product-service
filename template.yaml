@@ -2,7 +2,6 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   A unified stack for the GraphQL Product Service with dual-auth and PayPal integration.
-  This version uses the explicit AWS::ApiGateway resource structure.
 
 Parameters:
   ProjectName:
@@ -26,6 +25,10 @@ Parameters:
   PayPalWebhookId:
     Type: String
     Description: PayPal Sandbox Webhook ID
+  DeploymentVersion:
+    Type: String
+    Default: "1"
+    Description: Increment this value to force a new API Gateway deployment
 
 Globals:
   Function:
@@ -237,6 +240,7 @@ Resources:
   PublicApiResourceParent:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !GetAtt GraphQLApi.RootResourceId, PathPart: public}
+  
   PublicApiResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PublicApiResourceParent, PathPart: graphql}
@@ -296,6 +300,7 @@ Resources:
   AdminApiOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref AdminApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
+  
   PublicApiOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref PublicApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
@@ -332,10 +337,20 @@ Resources:
 
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: [AdminApiMethod, PublicApiMethod, CreateOrderApiMethod, CaptureOrderApiMethod, WebhookApiMethod, AdminApiOptionsMethod, PublicApiOptionsMethod, CreateOrderApiOptionsMethod, CaptureOrderApiOptionsMethod, WebhookApiOptionsMethod]
+    DependsOn:
+      - AdminApiMethod
+      - PublicApiMethod
+      - CreateOrderApiMethod
+      - CaptureOrderApiMethod
+      - WebhookApiMethod
+      - AdminApiOptionsMethod
+      - PublicApiOptionsMethod
+      - CreateOrderApiOptionsMethod
+      - CaptureOrderApiOptionsMethod
+      - WebhookApiOptionsMethod
     Properties:
       RestApiId: !Ref GraphQLApi
-      Description: !Sub "Deployment triggered at ${AWS::StackId}"
+      Description: !Sub "Deployment for ${ProjectName} at ${AWS::StackId}-${AWS::StackName}-${AWS::Region}-v${DeploymentVersion}"
 
   ApiStage:
     Type: AWS::ApiGateway::Stage
@@ -343,6 +358,15 @@ Resources:
       StageName: v1
       RestApiId: !Ref GraphQLApi
       DeploymentId: !Ref ApiDeployment
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: true
+      TracingEnabled: true
+      CacheClusterEnabled: false
+      Description: "v1 stage with PayPal APIs"
 
   ApiUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
@@ -439,6 +463,18 @@ Resources:
                 'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
 
 Outputs:
+  ApiDeploymentId:
+    Description: "ID of the API Gateway deployment"
+    Value: !Ref ApiDeployment
+  PaypalCreateOrderEndpoint:
+    Description: "The endpoint URL for the PayPal create-order API"
+    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/paypal/create-order"
+  PaypalCaptureOrderEndpoint:
+    Description: "The endpoint URL for the PayPal capture-order API"
+    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/paypal/capture-order"
+  PaypalWebhookEndpoint:
+    Description: "The endpoint URL for the PayPal webhook API"
+    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/paypal/webhook"
   AdminApiEndpoint:
     Description: "The endpoint URL for the admin GraphQL API (requires Cognito JWT)"
     Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/admin/graphql"
