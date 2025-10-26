@@ -25,9 +25,12 @@ Parameters:
   PayPalWebhookId:
     Type: String
     Description: PayPal Sandbox Webhook ID
+  PayPalEnvironmentMode:
+    Type: String
+    Description: PayPal Environment Mode.  Either 'live' or 'Sandbox'
   DeploymentVersion:
     Type: String
-    Default: "1"
+    Default: "6"
     Description: Increment this value to force a new API Gateway deployment
 
 Globals:
@@ -74,40 +77,13 @@ Resources:
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
 
   # =================================================================
-  # == SECRETS MANAGEMENT FOR PAYPAL
-  # =================================================================
-  PaypalClientIdParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${ProjectName}/paypal/client-id'
-      Type: String
-      Value: !Ref PayPalClientId
-      Description: PayPal Sandbox Client ID
-
-  PaypalClientSecretParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${ProjectName}/paypal/client-secret'
-      Type: String
-      Value: !Ref PayPalClientSecret
-      Description: PayPal Sandbox Client Secret
-
-  PaypalWebhookIdParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${ProjectName}/paypal/webhook-id'
-      Type: String
-      Value: !Ref PayPalWebhookId
-      Description: PayPal Sandbox Webhook ID
-
-  # =================================================================
   # == 2. LAMBDA FUNCTIONS
   # =================================================================
   GraphQLAdminFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${ProjectName}-GraphQL-Admin-Handler'
-      CodeUri: src/
+      CodeUri: src/product-admin
       Handler: admin.handler
       Environment: 
         Variables:
@@ -121,7 +97,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${ProjectName}-GraphQL-Public-Handler'
-      CodeUri: src/
+      CodeUri: src/product-public
       Handler: public.handler
       Environment: 
         Variables:
@@ -133,75 +109,49 @@ Resources:
 
   PaypalCreateOrderFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - PaypalClientIdParam
-      - PaypalClientSecretParam
     Properties:
       FunctionName: !Sub '${ProjectName}-Paypal-Create-Order'
-      CodeUri: src/
-      Handler: paypal/createOrder.handler
+      CodeUri: src/paypal-create-order
+      Handler: createOrder.handler
       Environment: 
         Variables:
-          PAYPAL_CLIENT_ID: !Ref PaypalClientIdParam
-          PAYPAL_CLIENT_SECRET: !Ref PaypalClientSecretParam
+          PAYPAL_CLIENT_ID: !Ref PayPalClientId
+          PAYPAL_CLIENT_SECRET: !Ref PayPalClientSecret
           ORDERS_TABLE_NAME: !Ref OrdersTableName
+          PAYPAL_ENVIRONMENT_MODE: !Ref PayPalEnvironmentMode
       Policies:
         - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ssm:GetParameter
-                - ssm:GetParameters
-              Resource:
-                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-id'
-                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-secret'
 
   PaypalCaptureOrderFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - PaypalClientIdParam
-      - PaypalClientSecretParam
     Properties:
       FunctionName: !Sub '${ProjectName}-Paypal-Capture-Order'
-      CodeUri: src/
-      Handler: paypal/captureOrder.handler
+      CodeUri: src/paypal-capture-order
+      Handler: captureOrder.handler
       Environment: 
         Variables:
-          PAYPAL_CLIENT_ID: !Ref PaypalClientIdParam
-          PAYPAL_CLIENT_SECRET: !Ref PaypalClientSecretParam
+          PAYPAL_CLIENT_ID: !Ref PayPalClientId
+          PAYPAL_CLIENT_SECRET: !Ref PayPalClientSecret
           ORDERS_TABLE_NAME: !Ref OrdersTableName
+          PAYPAL_ENVIRONMENT_MODE: !Ref PayPalEnvironmentMode
       Policies:
         - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ssm:GetParameter
-                - ssm:GetParameters
-              Resource:
-                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-id'
-                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/client-secret'
 
   PaypalWebhookFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-      - PaypalWebhookIdParam
     Properties:
       FunctionName: !Sub '${ProjectName}-Paypal-Webhook-Handler'
-      CodeUri: src/
-      Handler: paypal/webhook.handler
+      CodeUri: src/paypal-webhook
+      Handler: webhook.handler
       Environment: 
         Variables:
-          PAYPAL_WEBHOOK_ID: !Ref PaypalWebhookIdParam
+          PAYPAL_WEBHOOK_ID: !Ref PayPalWebhookId
+          PAYPAL_CLIENT_ID: !Ref PayPalClientId
+          PAYPAL_CLIENT_SECRET: !Ref PayPalClientSecret
           ORDERS_TABLE_NAME: !Ref OrdersTableName
+          PAYPAL_ENVIRONMENT_MODE: !Ref PayPalEnvironmentMode
       Policies:
         - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ssm:GetParameter
-                - ssm:GetParameters
-              Resource:
-                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/paypal/webhook-id'
 
   # =================================================================
   # == 3. API GATEWAY (EXPLICIT RESOURCE DEFINITIONS)

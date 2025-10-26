@@ -1,15 +1,13 @@
 {
-  "name": "product-service",
+  "name": "paypal-webhook",
   "version": "1.0.0",
-  "description": "GraphQL Product Service",
-  "main": "admin.js",
+  "description": "Paypal Webhook",
+  "main": "webhook.js",
   "private": true,
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.433.0",
     "@aws-sdk/lib-dynamodb": "^3.433.0",
+    "@paypal/paypal-server-sdk": "^1.1.0",
     "graphql": "^16.8.1"
   }
 }

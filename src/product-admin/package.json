@@ -1,0 +1,12 @@
+{
+  "name": "product-service-admin",
+  "version": "1.0.0",
+  "description": "Product Service Admin Function",
+  "main": "admin.js",
+  "private": true,
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.433.0",
+    "@aws-sdk/lib-dynamodb": "^3.433.0",
+    "graphql": "^16.8.1"
+  }
+}

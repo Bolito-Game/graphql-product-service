@@ -1,0 +1,13 @@
+{
+  "name": "paypal-capture-order",
+  "version": "1.0.0",
+  "description": "Paypal Capture Order",
+  "main": "captureOrder.js",
+  "private": true,
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.433.0",
+    "@aws-sdk/lib-dynamodb": "^3.433.0",
+    "@paypal/paypal-server-sdk": "^1.1.0",
+    "graphql": "^16.8.1"
+  }
+}

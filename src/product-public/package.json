@@ -1,0 +1,12 @@
+{
+  "name": "product-service-public",
+  "version": "1.0.0",
+  "description": "Product Service Public Function",
+  "main": "public.js",
+  "private": true,
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.433.0",
+    "@aws-sdk/lib-dynamodb": "^3.433.0",
+    "graphql": "^16.8.1"
+  }
+}
