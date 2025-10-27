@@ -53,12 +53,10 @@ exports.handler = async (event) => {
     const ordersController = new OrdersController(client);
 
     // Call the captureOrder method on the controller
-    const apiResponse = await ordersController.captureOrder(
-      orderID,
-      {
-        prefer: 'return=representation',
-      }
-    );
+    const apiResponse = await ordersController.captureOrder({
+      id: orderID,
+      prefer: 'return=representation',
+    });
 
     // Update in DynamoDB
     const ordersTable = process.env.ORDERS_TABLE_NAME;
