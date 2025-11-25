@@ -15,6 +15,7 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
+const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; 
 const CATEGORY_GSI_NAME = "categoryIndex";
 
 // --- Load GraphQL Schema ---
@@ -24,14 +25,32 @@ const schemaString = fs.readFileSync(
 );
 const schema = buildSchema(schemaString);
 
+const getLastUpdatedTimestamps = async () => {
+  try {
+    const [prod, cat] = await Promise.all([
+      docClient.send(new GetCommand({
+        TableName: METADATA_TABLE_NAME,
+        Key: { metadataId: "products_last_update" }
+      })),
+      docClient.send(new GetCommand({
+        TableName: METADATA_TABLE_NAME,
+        Key: { metadataId: "categories_last_update" }
+      }))
+    ]);
+    return {
+      products: prod.Item?.lastUpdated || null,
+      categories: cat.Item?.lastUpdated || null
+    };
+  } catch (err) {
+    console.error("Failed to read metadata table:", err);
+    return { products: null, categories: null };
+  }
+};
+
 // --- Helper Functions ---
 
 /**
  * Formats a DynamoDB product item into a GraphQL Product type, converting the localizations map to an array.
- * @param {object} item - The item retrieved from DynamoDB.
- * @param {string} [lang] - Optional language code to filter localizations.
- * @param {string} [country] - Optional country code to filter localizations.
- * @returns {object|null} A GraphQL Product object or null if the item is invalid.
  */
 const resolveLocalizations = (item, lang, country) => {
   if (!item) {
@@ -109,6 +128,15 @@ const resolveCategory = (item) => {
 // --- Root Resolvers (Read-Only) ---
 const readOnlyRoot = {
   Query: {
+    
+    metadata: async () => {
+      const ts = await getLastUpdatedTimestamps();
+      return {
+        productsLastUpdated: ts.products,
+        categoriesLastUpdated: ts.categories
+      };
+    },
+
     getProductsBySku: async ({ skus, lang, country }) => {
       if (!skus || skus.length === 0) {
         return [];
@@ -128,9 +156,10 @@ const readOnlyRoot = {
         return items.map((item) => resolveLocalizations(item, lang, country));
       } catch (error) {
         console.error(`DynamoDB Error getting products by SKUs:`, error);
-        return []; // Return empty array on error
+        return [];
       }
     },
+
     getProductsByCategory: async ({ category, lang, country }) => {
       const params = {
         TableName: PRODUCTS_TABLE_NAME,
@@ -146,6 +175,7 @@ const readOnlyRoot = {
         return [];
       }
     },
+
     getAllProductsByLocalization: async ({
       lang,
       country,
@@ -169,15 +199,19 @@ const readOnlyRoot = {
         const newNextToken = LastEvaluatedKey
           ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
           : null;
-        return { items: resolvedItems, nextToken: newNextToken };
+
+        const ts = await getLastUpdatedTimestamps();
+        return {
+          items: resolvedItems,
+          nextToken: newNextToken,
+          lastUpdated: ts.products
+        };
       } catch (error) {
-        console.error(
-          `DynamoDB Error scanning for localization ${key}:`,
-          error
-        );
+        console.error(`DynamoDB Error scanning for localization:`, error);
         return { items: [], nextToken: null };
       }
     },
+
     getAllProducts: async ({ limit, nextToken }) => {
       const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
@@ -193,12 +227,18 @@ const readOnlyRoot = {
         const newNextToken = LastEvaluatedKey
           ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
           : null;
-        return { items: resolvedItems, nextToken: newNextToken };
+        const ts = await getLastUpdatedTimestamps();
+        return {
+          items: resolvedItems,
+          nextToken: newNextToken,
+          lastUpdated: ts.products
+        };
       } catch (error) {
         console.error("DynamoDB Error in getAllProducts:", error);
         return { items: [], nextToken: null };
       }
     },
+
     getCategory: async ({ category }) => {
       const params = { TableName: CATEGORIES_TABLE_NAME, Key: { category } };
       try {
@@ -209,6 +249,7 @@ const readOnlyRoot = {
         return null;
       }
     },
+
     getAllCategories: async ({ limit, nextToken }) => {
       const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
@@ -223,15 +264,18 @@ const readOnlyRoot = {
         const newNextToken = LastEvaluatedKey
           ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
           : null;
+        const ts = await getLastUpdatedTimestamps();
         return {
           items: Items.map(resolveCategory),
           nextToken: newNextToken,
+          lastUpdated: ts.categories
         };
       } catch (error) {
         console.error("DynamoDB Error in getAllCategories:", error);
         return { items: [], nextToken: null };
       }
     },
+
     getAllCategoriesByLanguage: async ({ lang, limit, nextToken }) => {
       const params = { TableName: CATEGORIES_TABLE_NAME, Limit: limit || 20 };
       if (nextToken) {
@@ -250,9 +294,11 @@ const readOnlyRoot = {
           category: item.category,
           text: item.translations[lang] || item.category,
         }));
+        const ts = await getLastUpdatedTimestamps();
         return {
           items: translatedItems,
           nextToken: newNextToken,
+          lastUpdated: ts.categories
         };
       } catch (error) {
         console.error(
@@ -270,7 +316,7 @@ exports.handler = async (event) => {
   try {
     const { query, variables, operationName } = JSON.parse(event.body);
 
-    // Safeguard to block mutations if they appear in the query string
+    // Safeguard to block mutations
     const { definitions } = require("graphql/language/parser").parse(query);
     const isMutation = definitions.some(
       (def) =>
@@ -284,7 +330,7 @@ exports.handler = async (event) => {
     const result = await graphql({
       schema,
       source: query,
-      rootValue: readOnlyRoot.Query, // Use only the Query resolvers
+      rootValue: readOnlyRoot.Query,
       variableValues: variables,
       operationName,
     });

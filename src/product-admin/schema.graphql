@@ -11,7 +11,7 @@ enum ProductStatus {
 }
 
 # ---------------------------------------------------------------- #
-# Category Types
+# Shared Types
 # ---------------------------------------------------------------- #
 
 """
@@ -25,53 +25,7 @@ type Translation {
 }
 
 """
-Defines a category and its available translations.
-"""
-type Category {
-  "The unique identifier for the category (e.g., 'Electronics')."
-  category: ID!
-  "A list of all available translations for the category name."
-  translations: [Translation!]!
-}
-
-"""
-A wrapper for paginated category lists, including the items
-and a token to fetch the next page.
-"""
-type PaginatedCategories {
-  "A list of categories on the current page."
-  items: [Category!]!
-  "A token for fetching the next page of results."
-  nextToken: String
-}
-
-"""
-A category key with its text in a specific language.
-"""
-type CategoryTranslation {
-  "The unique identifier for the category."
-  category: ID!
-  "The category name in the requested language."
-  text: String!
-}
-
-"""
-A paginated list of category translations for a specific language.
-"""
-type PaginatedCategoryTranslations {
-  "A list of category translations on the current page."
-  items: [CategoryTranslation!]!
-  "A token for fetching the next page of results."
-  nextToken: String
-}
-
-# ---------------------------------------------------------------- #
-# Product Types
-# ---------------------------------------------------------------- #
-
-"""
-Defines the structure of a localization for a product, containing
-language- and country-specific details.
+Language- and country-specific details for a product.
 """
 type Localization {
   "Language code (e.g., 'en', 'es')."
@@ -89,65 +43,89 @@ type Localization {
 }
 
 """
-Defines the structure of a product.
+Global metadata containing the last update timestamps for major datasets.
+Used heavily by clients for efficient caching and invalidation.
 """
-type Product {
-  "The unique identifier for the product (Stock Keeping Unit)."
-  sku: ID!
-  "The global, non-localized category key for the product."
-  category: String!
-  "A URL for the product's primary image."
-  imageUrl: String
-  "The current status of the product."
-  productStatus: ProductStatus!
-  "The number of units currently in stock."
-  quantityInStock: Int!
-  "A list of all available localizations for the product."
-  localizations: [Localization!]!
+type Metadata {
+  "ISO-8601 timestamp of the last time any product or localization was modified."
+  productsLastUpdated: AWSDateTime!
+  "ISO-8601 timestamp of the last time any category or translation was modified."
+  categoriesLastUpdated: AWSDateTime!
 }
 
-"""
-A wrapper for paginated product lists, including the items
-and a token to fetch the next page.
-"""
-type PaginatedProducts {
-  "A list of products on the current page."
-  items: [Product!]!
-  "A token to pass to the next query to get the next page of results. Null if there are no more pages."
+# ---------------------------------------------------------------- #
+# Category Types
+# ---------------------------------------------------------------- #
+
+type Category {
+  "The unique identifier for the category (e.g., 'Electronics')."
+  category: ID!
+  "All available translations for the category name."
+  translations: [Translation!]!
+  "When this specific category was last modified (optional – rarely needed)."
+  lastUpdated: AWSDateTime
+}
+
+type PaginatedCategories {
+  items: [Category!]!
   nextToken: String
+  "When ANY category was last changed – perfect for cache invalidation."
+  lastUpdated: AWSDateTime!
+}
+
+type CategoryTranslation {
+  category: ID!
+  text: String!
+}
+
+type PaginatedCategoryTranslations {
+  items: [CategoryTranslation!]!
+  nextToken: String
+  "Same global timestamp as PaginatedCategories."
+  lastUpdated: AWSDateTime!
+}
+
+# ---------------------------------------------------------------- #
+# Product Types
+# ---------------------------------------------------------------- #
+
+type Product {
+  sku: ID!
+  category: String!
+  imageUrl: String
+  productStatus: ProductStatus!
+  quantityInStock: Int!
+  localizations: [Localization!]!
+  "When this specific product was last modified (optional)."
+  lastUpdated: AWSDateTime
+}
+
+type PaginatedProducts {
+  items: [Product!]!
+  nextToken: String
+  "When ANY product or localization was last changed – critical for caching."
+  lastUpdated: AWSDateTime!
 }
 
 # ---------------------------------------------------------------- #
 # Input Types
 # ---------------------------------------------------------------- #
 
-"""
-Input for creating or updating a translation.
-"""
 input TranslationInput {
   lang: String!
   text: String!
 }
 
-"""
-Input for creating a new category.
-"""
 input CreateCategoryInput {
   category: ID!
   translations: [TranslationInput!]!
 }
 
-"""
-Input for upsert a category.
-"""
 input UpsertCategoryTranslationInput {
   category: ID!
   translations: [TranslationInput!]!
 }
 
-"""
-Input for creating or updating a localization. All fields are required.
-"""
 input LocalizationInput {
   lang: String!
   country: String!
@@ -157,9 +135,6 @@ input LocalizationInput {
   currency: String!
 }
 
-"""
-Input for creating a new product.
-"""
 input CreateProductInput {
   sku: ID!
   category: String!
@@ -169,10 +144,6 @@ input CreateProductInput {
   localizations: [LocalizationInput!]!
 }
 
-"""
-Input for updating an existing product's core fields.
-SKU is required to identify the product. All other fields are optional.
-"""
 input UpdateProductInput {
   sku: ID!
   category: String
@@ -182,70 +153,48 @@ input UpdateProductInput {
 }
 
 # ---------------------------------------------------------------- #
-# Root Operation Types
+# Query
 # ---------------------------------------------------------------- #
 
-"""
-Defines all the read operations available in the API.
-"""
 type Query {
-  # --- Product Queries ---
-  "Retrieves a collection of products by their SKUs."
+  # Product Queries
   getProductsBySku(skus: [ID!]!, lang: String = "en", country: String = "us"): [Product]
-
-  "Retrieves all products belonging to a specific category."
   getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!
-
-  "Retrieves a paginated list of all products that have a specific localization."
   getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
-
-  "Retrieves a paginated list of all products with all of their localizations."
   getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
 
-  # --- Category Queries ---
-  "Retrieves a single category and all its translations by its key."
+  # Category Queries
   getCategory(category: ID!): Category
-
-  "Retrieves a paginated list of all categories with all their translations."
   getAllCategories(limit: Int = 20, nextToken: String): PaginatedCategories
-
-  "Retrieves a paginated list of categories with their names in a specific language."
   getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
+
+  # Global metadata – extremely useful for HTTP caching and client-side cache busting
+  "Returns the latest modification timestamps for products and categories."
+  metadata: Metadata!
 }
 
-"""
-Defines all the write (Create, Update, Delete) operations.
-"""
+# ---------------------------------------------------------------- #
+# Mutation
+# ---------------------------------------------------------------- #
+
 type Mutation {
-  # --- Product Mutations ---
-  "Creates a new product along with its initial localizations."
+  # Product Mutations
   createProduct(input: CreateProductInput!): Product!
-
-  "Updates the core fields of an existing product."
   updateProduct(input: UpdateProductInput!): Product!
-
-  "Deletes a product from the system using its SKU."
   deleteProduct(sku: ID!): Product
-
-  "Adds one or more localizations to an existing product."
   addLocalization(sku: ID!, localizations: [LocalizationInput!]!): Product!
-
-  "Updates one or more existing localizations on a product."
   updateLocalization(sku: ID!, localizations: [LocalizationInput!]!): Product!
-
-  "Removes a localization from a product."
   removeLocalization(sku: ID!, lang: String!, country: String!): Product!
 
-  # --- Category Mutations ---
-  "Creates a new category with its initial translations."
+  # Category Mutations
   createCategory(input: CreateCategoryInput!): Category!
-
-  "Deletes a category and all its translations."
   deleteCategory(category: ID!): Category
-
-  "Adds or updates a translation for a given category."
   upsertCategoryTranslation(input: UpsertCategoryTranslationInput!): Category!
-
-  "Removes a translation from a category."
   removeCategoryTranslation(category: ID!, lang: String!): Category!
 }
+
+# ---------------------------------------------------------------- #
+# AWS AppSync Scalar Types
+# ---------------------------------------------------------------- #
+
+scalar AWSDateTime

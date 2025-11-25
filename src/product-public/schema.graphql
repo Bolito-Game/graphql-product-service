@@ -2,149 +2,111 @@
 Defines the set of possible statuses for a product.
 """
 enum ProductStatus {
-  "The product is available for sale."
   ACTIVE
-  "The product is not currently available for sale."
   INACTIVE
-  "The product is no longer being sold."
   DISCONTINUED
+}
+
+# ---------------------------------------------------------------- #
+# Supporting Types
+# ---------------------------------------------------------------- #
+
+type Translation {
+  lang: String!
+  text: String!
+}
+
+type Localization {
+  lang: String!
+  country: String!
+  productName: String!
+  description: String
+  price: Float!
+  currency: String!
 }
 
 # ---------------------------------------------------------------- #
 # Category Types
 # ---------------------------------------------------------------- #
 
-"""
-A translated string for a category.
-"""
-type Translation {
-  "Language code (e.g., 'en', 'es')."
-  lang: String!
-  "The translated text for the category."
-  text: String!
-}
-
-"""
-Defines a category and its available translations.
-"""
 type Category {
-  "The unique identifier for the category (e.g., 'Electronics')."
   category: ID!
-  "A list of all available translations for the category name."
   translations: [Translation!]!
 }
 
-"""
-A wrapper for paginated category lists, including the items
-and a token to fetch the next page.
-"""
 type PaginatedCategories {
-  "A list of categories on the current page."
   items: [Category!]!
-  "A token for fetching the next page of results."
   nextToken: String
+  "ISO-8601 timestamp when any category was last modified (create/update/delete/translation change)"
+  lastUpdated: AWSDateTime!
 }
 
-"""
-A category key with its text in a specific language.
-"""
 type CategoryTranslation {
-  "The unique identifier for the category."
   category: ID!
-  "The category name in the requested language."
   text: String!
 }
 
-"""
-A paginated list of category translations for a specific language.
-"""
 type PaginatedCategoryTranslations {
-  "A list of category translations on the current page."
   items: [CategoryTranslation!]!
-  "A token for fetching the next page of results."
   nextToken: String
+  "Same global timestamp as PaginatedCategories — reflects the source data freshness"
+  lastUpdated: AWSDateTime!
 }
 
 # ---------------------------------------------------------------- #
 # Product Types
 # ---------------------------------------------------------------- #
 
-"""
-Defines the structure of a localization for a product, containing
-language- and country-specific details.
-"""
-type Localization {
-  "Language code (e.g., 'en', 'es')."
-  lang: String!
-  "Country code (e.g., 'us', 'mx')."
-  country: String!
-  "The localized name of the product."
-  productName: String!
-  "A localized description of the product."
-  description: String
-  "The price in the local currency."
-  price: Float!
-  "The currency code (e.g., 'USD', 'MXN')."
-  currency: String!
-}
-
-"""
-Defines the structure of a product.
-"""
 type Product {
-  "The unique identifier for the product (Stock Keeping Unit)."
   sku: ID!
-  "The global, non-localized category key for the product."
   category: String!
-  "A URL for the product's primary image."
   imageUrl: String
-  "The current status of the product."
   productStatus: ProductStatus!
-  "The number of units currently in stock."
   quantityInStock: Int!
-  "A list of all available localizations for the product."
   localizations: [Localization!]!
 }
 
-"""
-A wrapper for paginated product lists, including the items
-and a token to fetch the next page.
-"""
 type PaginatedProducts {
-  "A list of products on the current page."
   items: [Product!]!
-  "A token to pass to the next query to get the next page of results. Null if there are no more pages."
   nextToken: String
+  "ISO-8601 timestamp when any product or localization was last modified"
+  lastUpdated: AWSDateTime!
 }
 
 # ---------------------------------------------------------------- #
-# Root Operation Types
+# New: Global metadata query (highly recommended)
 # ---------------------------------------------------------------- #
 
 """
-Defines all the read operations available in the API.
+Global last-update timestamps. Perfect for:
+- HTTP ETag / If-Modified-Since caching
+- Apollo/URQL/RTK-Query cache invalidation
+- Knowing whether to refetch entire datasets
 """
+type Metadata {
+  productsLastUpdated: AWSDateTime!
+  categoriesLastUpdated: AWSDateTime!
+}
+
+# ---------------------------------------------------------------- #
+# Query — updated with metadata and lastUpdated fields
+# ---------------------------------------------------------------- #
+
 type Query {
-  # --- Product Queries ---
-  "Retrieves a collection of products by their SKUs."
+  # Product Queries
   getProductsBySku(skus: [ID!]!, lang: String = "en", country: String = "us"): [Product]
-
-  "Retrieves all products belonging to a specific category."
   getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!
-
-  "Retrieves a paginated list of all products that have a specific localization."
   getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
-
-  "Retrieves a paginated list of all products with all of their localizations."
   getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
 
-  # --- Category Queries ---
-  "Retrieves a single category and all its translations by its key."
+  # Category Queries
   getCategory(category: ID!): Category
-
-  "Retrieves a paginated list of all categories with all their translations."
   getAllCategories(limit: Int = 20, nextToken: String): PaginatedCategories
-
-  "Retrieves a paginated list of categories with their names in a specific language."
   getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
+
+  "Get the latest modification timestamps for products and categories — ideal for caching"
+  metadata: Metadata!
 }
+
+# Required scalar if not already present in your schema
+scalar AWSDateTime

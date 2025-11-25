@@ -18,11 +18,36 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
+const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; // ← ADDED
 const CATEGORY_GSI_NAME = "categoryIndex";
 
 // --- Load GraphQL Schema ---
 const schemaString = fs.readFileSync(path.join(__dirname, "schema.graphql"), "utf8");
 const schema = buildSchema(schemaString);
+
+// ← ADDED: Helper to update metadata timestamp
+const updateMetadataTimestamp = async (type) => {
+  const now = new Date().toISOString();
+  await docClient.send(new PutCommand({
+    TableName: METADATA_TABLE_NAME,
+    Item: {
+      metadataId: type === "product" ? "products_last_update" : "categories_last_update",
+      lastUpdated: now
+    }
+  }));
+};
+
+// ← ADDED: Helper to read both timestamps
+const getLastUpdatedTimestamps = async () => {
+  const [prod, cat] = await Promise.all([
+    docClient.send(new GetCommand({ TableName: METADATA_TABLE_NAME, Key: { metadataId: "products_last_update" } })),
+    docClient.send(new GetCommand({ TableName: METADATA_TABLE_NAME, Key: { metadataId: "categories_last_update" } }))
+  ]);
+  return {
+    products: prod.Item?.lastUpdated || null,
+    categories: cat.Item?.lastUpdated || null
+  };
+};
 
 /**
  * Formats a DynamoDB product item into a GraphQL Product type, converting the localizations map to an array.
@@ -111,6 +136,15 @@ const resolveCategory = (item) => {
 
 // Root resolvers for GraphQL operations
 const adminRoot = {
+  
+  metadata: async () => {
+    const ts = await getLastUpdatedTimestamps();
+    return {
+      productsLastUpdated: ts.products,
+      categoriesLastUpdated: ts.categories
+    };
+  },
+
   getProductsBySku: async ({ skus, lang, country }) => {
     if (!skus || skus.length === 0) {
       return [];
@@ -168,7 +202,8 @@ const adminRoot = {
       const newNextToken = LastEvaluatedKey
         ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
         : null;
-      return { items: resolvedItems, nextToken: newNextToken };
+      const ts = await getLastUpdatedTimestamps();
+      return { items: resolvedItems, nextToken: newNextToken, lastUpdated: ts.products };
     } catch (error) {
       console.error(`DynamoDB Error scanning for localization ${key}:`, error);
       return { items: [], nextToken: null };
@@ -190,7 +225,8 @@ const adminRoot = {
       const newNextToken = LastEvaluatedKey
         ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
         : null;
-      return { items: resolvedItems, nextToken: newNextToken };
+      const ts = await getLastUpdatedTimestamps();
+      return { items: resolvedItems, nextToken: newNextToken, lastUpdated: ts.products };
     } catch (error) {
       console.error("DynamoDB Error in getAllProducts:", error);
       return { items: [], nextToken: null };
@@ -222,9 +258,11 @@ const adminRoot = {
       const newNextToken = LastEvaluatedKey
         ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
         : null;
+      const ts = await getLastUpdatedTimestamps();
       return {
         items: Items.map(resolveCategory),
         nextToken: newNextToken,
+        lastUpdated: ts.categories
       };
     } catch (error) {
       console.error("DynamoDB Error in getAllCategories:", error);
@@ -250,9 +288,11 @@ const adminRoot = {
         category: item.category,
         text: item.translations[lang] || item.category,
       }));
+      const ts = await getLastUpdatedTimestamps();
       return {
         items: translatedItems,
         nextToken: newNextToken,
+        lastUpdated: ts.categories
       };
     } catch (error) {
       console.error(
@@ -279,6 +319,7 @@ const adminRoot = {
 
     try {
       await docClient.send(new PutCommand(params));
+      await updateMetadataTimestamp("product"); 
       return resolveLocalizations(item);
     } catch (error) {
       if (error.name === "ConditionalCheckFailedException") {
@@ -320,6 +361,7 @@ const adminRoot = {
 
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
+      await updateMetadataTimestamp("product"); 
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB updateProduct Error for SKU ${sku}:`, error);
@@ -335,6 +377,7 @@ const adminRoot = {
     };
     try {
       const { Attributes } = await docClient.send(new DeleteCommand(params));
+      await updateMetadataTimestamp("product"); // ← ADDED
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB deleteProduct Error for SKU ${sku}:`, error);
@@ -366,6 +409,7 @@ const adminRoot = {
 
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
+      await updateMetadataTimestamp("product"); // ← ADDED
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB addLocalization Error for SKU ${sku}:`, error);
@@ -389,6 +433,7 @@ const adminRoot = {
     };
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
+      await updateMetadataTimestamp("product"); 
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB removeLocalization Error for SKU ${sku}:`, error);
@@ -411,6 +456,7 @@ const adminRoot = {
 
     try {
       await docClient.send(new PutCommand(params));
+      await updateMetadataTimestamp("category"); 
       return resolveCategory(item);
     } catch (error) {
       if (error.name === "ConditionalCheckFailedException") {
@@ -431,6 +477,7 @@ const adminRoot = {
     };
     try {
       const { Attributes } = await docClient.send(new DeleteCommand(params));
+      await updateMetadataTimestamp("category"); // ← ADDED
       return resolveCategory(Attributes);
     } catch (error) {
       console.error(`DynamoDB deleteCategory Error for ${category}:`, error);
@@ -452,6 +499,7 @@ const adminRoot = {
 
     try {
       await docClient.send(new PutCommand(params));
+      await updateMetadataTimestamp("category"); 
       return resolveCategory(item);
     } catch (error) {
       console.error("DynamoDB upsertCategoryTranslation Error:", error);
@@ -469,6 +517,7 @@ const adminRoot = {
     };
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
+      await updateMetadataTimestamp("category"); 
       return resolveCategory(Attributes);
     } catch (error) {
       console.error(
