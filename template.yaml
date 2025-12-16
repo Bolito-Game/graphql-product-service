@@ -52,12 +52,21 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Ref ProductsTableName
-      AttributeDefinitions: [{AttributeName: sku, AttributeType: S}, {AttributeName: category, AttributeType: S}]
+      AttributeDefinitions:
+        - {AttributeName: sku, AttributeType: S}
+        - {AttributeName: category, AttributeType: S}
+        - {AttributeName: productNameLower, AttributeType: S}
+        - {AttributeName: searchKey, AttributeType: S} 
       KeySchema: [{AttributeName: sku, KeyType: HASH}]
       BillingMode: PAY_PER_REQUEST
       GlobalSecondaryIndexes:
         - IndexName: categoryIndex
           KeySchema: [{AttributeName: category, KeyType: HASH}]
+          Projection: {ProjectionType: ALL}
+        - IndexName: productSearchIndex 
+          KeySchema:
+            - {AttributeName: searchKey, KeyType: HASH}
+            - {AttributeName: productNameLower, KeyType: RANGE}
           Projection: {ProjectionType: ALL}
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
 

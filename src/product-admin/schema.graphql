@@ -51,6 +51,8 @@ type Metadata {
   productsLastUpdated: AWSDateTime!
   "ISO-8601 timestamp of the last time any category or translation was modified."
   categoriesLastUpdated: AWSDateTime!
+  "ISO two-letters code for language and country."
+  defaultLocale:String
 }
 
 # ---------------------------------------------------------------- #
@@ -159,14 +161,16 @@ input UpdateProductInput {
 type Query {
   # Product Queries
   getProductsBySku(skus: [ID!]!, lang: String = "en", country: String = "us"): [Product]
-  getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!
+  getProductsByCategory(category: String!, lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
   getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
   getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
+  searchProducts(search: String!, limit: Int = 20, nextToken: String): PaginatedProducts
 
   # Category Queries
   getCategory(category: ID!): Category
   getAllCategories(limit: Int = 20, nextToken: String): PaginatedCategories
   getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
+  searchCategories(search: String!, limit: Int = 20, nextToken: String): PaginatedCategories
 
   # Global metadata – extremely useful for HTTP caching and client-side cache busting
   "Returns the latest modification timestamps for products and categories."
@@ -191,6 +195,9 @@ type Mutation {
   deleteCategory(category: ID!): Category
   upsertCategoryTranslation(input: UpsertCategoryTranslationInput!): Category!
   removeCategoryTranslation(category: ID!, lang: String!): Category!
+
+  #Metadata Mutations
+  setDefaultLocale(locale: String!): String!
 }
 
 # ---------------------------------------------------------------- #

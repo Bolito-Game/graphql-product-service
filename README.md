@@ -129,3 +129,4 @@ Next, you can use AWS Serverless Application Repository to deploy ready to use A
 # Run these in your terminal (replace <region> and <table-name> if needed)
 aws dynamodb put-item --table-name metadata --item file://products_last_update.json --region us-east-2
 aws dynamodb put-item --table-name metadata --item file://categories_last_update.json --region us-east-2
+aws dynamodb put-item --table-name metadata --item file://default_locale.json --region us-east-2

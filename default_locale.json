@@ -1,0 +1,8 @@
+{
+    "metadataId": {
+        "S": "default_locale"
+    },
+    "value": {
+        "S": "en-us"
+    }
+}

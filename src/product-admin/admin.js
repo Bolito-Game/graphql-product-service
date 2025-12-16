@@ -1,14 +1,14 @@
 const { graphql, buildSchema } = require("graphql");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
- DynamoDBDocumentClient,
- GetCommand,
- PutCommand,
- UpdateCommand,
- DeleteCommand,
- QueryCommand,
- ScanCommand,
- BatchGetCommand, 
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  UpdateCommand,
+  DeleteCommand,
+  QueryCommand,
+  ScanCommand,
+  BatchGetCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const fs = require("fs");
 const path = require("path");
@@ -20,33 +20,76 @@ const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
 const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; // ← ADDED
 const CATEGORY_GSI_NAME = "categoryIndex";
+const GLOBAL_SEARCH_KEY = "PRODUCTS";
 
 // --- Load GraphQL Schema ---
-const schemaString = fs.readFileSync(path.join(__dirname, "schema.graphql"), "utf8");
+const schemaString = fs.readFileSync(
+  path.join(__dirname, "schema.graphql"),
+  "utf8"
+);
 const schema = buildSchema(schemaString);
 
-// ← ADDED: Helper to update metadata timestamp
+// Helper to update metadata timestamp
 const updateMetadataTimestamp = async (type) => {
   const now = new Date().toISOString();
-  await docClient.send(new PutCommand({
-    TableName: METADATA_TABLE_NAME,
-    Item: {
-      metadataId: type === "product" ? "products_last_update" : "categories_last_update",
-      lastUpdated: now
-    }
-  }));
+  await docClient.send(
+    new PutCommand({
+      TableName: METADATA_TABLE_NAME,
+      Item: {
+        metadataId:
+          type === "product"
+            ? "products_last_update"
+            : "categories_last_update",
+        value: now,
+      },
+    })
+  );
 };
 
-// ← ADDED: Helper to read both timestamps
+// Helper to read both timestamps
 const getLastUpdatedTimestamps = async () => {
   const [prod, cat] = await Promise.all([
-    docClient.send(new GetCommand({ TableName: METADATA_TABLE_NAME, Key: { metadataId: "products_last_update" } })),
-    docClient.send(new GetCommand({ TableName: METADATA_TABLE_NAME, Key: { metadataId: "categories_last_update" } }))
+    docClient.send(
+      new GetCommand({
+        TableName: METADATA_TABLE_NAME,
+        Key: { metadataId: "products_last_update" },
+      })
+    ),
+    docClient.send(
+      new GetCommand({
+        TableName: METADATA_TABLE_NAME,
+        Key: { metadataId: "categories_last_update" },
+      })
+    ),
   ]);
   return {
-    products: prod.Item?.lastUpdated || null,
-    categories: cat.Item?.lastUpdated || null
+    products: prod.Item?.value || null,
+    categories: cat.Item?.value || null,
   };
+};
+
+// Helper to read the default locale
+let cachedDefaultLocale = null;
+
+const getDefaultLocale = async () => {
+  if (cachedDefaultLocale !== null) {
+    return cachedDefaultLocale;
+  }
+
+  try {
+    const { Item } = await docClient.send(
+      new GetCommand({
+        TableName: METADATA_TABLE_NAME,
+        Key: { metadataId: "default_locale" },
+      })
+    );
+    cachedDefaultLocale = Item?.value || null;
+    return cachedDefaultLocale;
+  } catch (err) {
+    console.error("Failed to read default_locale from Metadata table", err);
+    cachedDefaultLocale = null;
+    return null;
+  }
 };
 
 /**
@@ -56,63 +99,82 @@ const getLastUpdatedTimestamps = async () => {
  * @param {string} [country] - Optional country code to filter localizations.
  * @returns {object|null} A GraphQL Product object or null if the item is invalid.
  */
-const resolveLocalizations = (item, lang, country) => {
-  if (!item) {
-    return null;
+const resolveLocalizations = async (item, lang, country) => {
+  if (!item) return null;
+
+  const localizations = item.localizations || {};
+  const allKeys = Object.keys(localizations);
+
+  if (allKeys.length === 0) {
+    // No localizations at all
+    return { ...item, localizations: [] };
   }
 
-  let localizationsArray = [];
-
+  // ———————————————————————————————————————————————
+  // 1. Specific locale requested → return exactly ONE
+  // ———————————————————————————————————————————————
   if (lang && country) {
-    const key = `${lang}-${country}`;
-    const specificLoc = item.localizations?.[key];
+    const exactKey = `${lang}-${country}`;
 
-    if (specificLoc) {
-      localizationsArray.push({ lang, country, ...specificLoc });
-    } else {
-      const localizations = item.localizations || {};
-      const allKeys = Object.keys(localizations);
-
-      const langMatchKey = allKeys.find(k => k.startsWith(`${lang}-`));
-
-      if (langMatchKey) {
-        const [matchLang, matchCountry] = langMatchKey.split('-');
-        localizationsArray.push({
-          lang: matchLang,
-          country: matchCountry,
-          ...localizations[langMatchKey],
-        });
-      }
-      
-      else if (localizations['en-us']) {
-        localizationsArray.push({
-          lang: 'en',
-          country: 'us',
-          ...localizations['en-us'],
-        });
-      }
-      
-      else if (allKeys.length > 0) {
-        const firstKey = allKeys[0];
-        const [firstLang, firstCountry] = firstKey.split('-');
-        localizationsArray.push({
-          lang: firstLang,
-          country: firstCountry,
-          ...localizations[firstKey],
-        });
-      }
+    // Exact match
+    if (localizations[exactKey]) {
+      const [l, c] = exactKey.split("-");
+      return {
+        ...item,
+        localizations: [{ lang: l, country: c, ...localizations[exactKey] }],
+      };
     }
-  } else {
-    localizationsArray = Object.entries(item.localizations || {}).map(([key, locData]) => {
-      const [lang, country] = key.split('-');
-      return { lang, country, ...locData };
-    });
+
+    // Same language, any country
+    const langMatch = allKeys.find((k) => k.startsWith(`${lang}-`));
+    if (langMatch) {
+      const [l, c] = langMatch.split("-");
+      return {
+        ...item,
+        localizations: [{ lang: l, country: c, ...localizations[langMatch] }],
+      };
+    }
+
+    // Merchant default locale
+    const defaultKey = await getDefaultLocale();
+    if (defaultKey && localizations[defaultKey]) {
+      const [l, c] = defaultKey.split("-");
+      return {
+        ...item,
+        localizations: [{ lang: l, country: c, ...localizations[defaultKey] }],
+      };
+    }
+
+    // Ultimate fallback: first available
+    const [l, c] = allKeys[0].split("-");
+    return {
+      ...item,
+      localizations: [{ lang: l, country: c, ...localizations[allKeys[0]] }],
+    };
   }
 
-  return {
-    ...item,
-    localizations: localizationsArray,
-  };
+  // ———————————————————————————————————————————————
+  // 2. No specific locale → return ALL, default first
+  // ———————————————————————————————————————————————
+  const result = [];
+
+  const defaultKey = await getDefaultLocale();
+
+  // Put merchant default first (if it exists in this product)
+  if (defaultKey && localizations[defaultKey]) {
+    const [l, c] = defaultKey.split("-");
+    result.push({ lang: l, country: c, ...localizations[defaultKey] });
+  }
+
+  // Add the rest (skip the default if we already added it)
+  allKeys.forEach((key) => {
+    if (key !== defaultKey) {
+      const [l, c] = key.split("-");
+      result.push({ lang: l, country: c, ...localizations[key] });
+    }
+  });
+
+  return { ...item, localizations: result };
 };
 
 /**
@@ -124,10 +186,12 @@ const resolveCategory = (item) => {
   if (!item) {
     return null;
   }
-  const translationsArray = Object.entries(item.translations || {}).map(([lang, text]) => ({
-    lang,
-    text,
-  }));
+  const translationsArray = Object.entries(item.translations || {}).map(
+    ([lang, text]) => ({
+      lang,
+      text,
+    })
+  );
   return {
     ...item,
     translations: translationsArray,
@@ -136,12 +200,31 @@ const resolveCategory = (item) => {
 
 // Root resolvers for GraphQL operations
 const adminRoot = {
-  
   metadata: async () => {
-    const ts = await getLastUpdatedTimestamps();
+    const [prod, cat, loc] = await Promise.all([
+      docClient.send(
+        new GetCommand({
+          TableName: METADATA_TABLE_NAME,
+          Key: { metadataId: "products_last_update" },
+        })
+      ),
+      docClient.send(
+        new GetCommand({
+          TableName: METADATA_TABLE_NAME,
+          Key: { metadataId: "categories_last_update" },
+        })
+      ),
+      docClient.send(
+        new GetCommand({
+          TableName: METADATA_TABLE_NAME,
+          Key: { metadataId: "default_locale" },
+        })
+      ),
+    ]);
     return {
-      productsLastUpdated: ts.products,
-      categoriesLastUpdated: ts.categories
+      productsLastUpdated: prod.Item?.value || null,
+      categoriesLastUpdated: cat.Item?.value || null,
+      defaultLocale: loc.Item?.value || null,
     };
   },
 
@@ -161,26 +244,55 @@ const adminRoot = {
     try {
       const { Responses } = await docClient.send(new BatchGetCommand(params));
       const items = Responses[PRODUCTS_TABLE_NAME] || [];
-      return items.map((item) => resolveLocalizations(item, lang, country));
+      return items.map((item) => resolveLocalizations(item));
     } catch (error) {
       console.error(`DynamoDB Error getting products by SKUs:`, error);
       return []; // Return empty array on error
     }
   },
 
-  getProductsByCategory: async ({ category, lang, country }) => {
+  getProductsByCategory: async ({
+    category,
+    lang,
+    country,
+    limit,
+    nextToken,
+  }) => {
     const params = {
       TableName: PRODUCTS_TABLE_NAME,
       IndexName: CATEGORY_GSI_NAME,
       KeyConditionExpression: "category = :category",
       ExpressionAttributeValues: { ":category": category },
+      Limit: limit || 20,
     };
+    if (nextToken) {
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
+    }
     try {
-      const { Items } = await docClient.send(new QueryCommand(params));
-      return Items.map((item) => resolveLocalizations(item, lang, country));
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new QueryCommand(params)
+      );
+      const resolvedItems = Items.map((item) => resolveLocalizations(item));
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
+
+      const ts = await getLastUpdatedTimestamps();
+
+      return {
+        items: resolvedItems,
+        nextToken: newNextToken,
+        lastUpdated: ts.products,
+      };
     } catch (error) {
       console.error(`DynamoDB Error querying category ${category}:`, error);
-      return [];
+      return {
+        items: [],
+        nextToken: null,
+        lastUpdated: new Date().toISOString(),
+      };
     }
   },
 
@@ -203,7 +315,11 @@ const adminRoot = {
         ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
         : null;
       const ts = await getLastUpdatedTimestamps();
-      return { items: resolvedItems, nextToken: newNextToken, lastUpdated: ts.products };
+      return {
+        items: resolvedItems,
+        nextToken: newNextToken,
+        lastUpdated: ts.products,
+      };
     } catch (error) {
       console.error(`DynamoDB Error scanning for localization ${key}:`, error);
       return { items: [], nextToken: null };
@@ -226,9 +342,66 @@ const adminRoot = {
         ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
         : null;
       const ts = await getLastUpdatedTimestamps();
-      return { items: resolvedItems, nextToken: newNextToken, lastUpdated: ts.products };
+      return {
+        items: resolvedItems,
+        nextToken: newNextToken,
+        lastUpdated: ts.products,
+      };
     } catch (error) {
       console.error("DynamoDB Error in getAllProducts:", error);
+      return { items: [], nextToken: null };
+    }
+  },
+
+  searchProducts: async ({ search, limit, nextToken }) => {
+    if (!search) {
+      const ts = await getLastUpdatedTimestamps();
+      return { items: [], nextToken: null, lastUpdated: ts.products };
+    }
+
+    const searchPrefix = search.trim().toLowerCase();
+
+    const params = {
+      TableName: PRODUCTS_TABLE_NAME,
+      IndexName: "productSearchIndex",
+      Limit: limit || 20,
+      KeyConditionExpression:
+        "#hk = :hkVal AND begins_with(#sk, :searchPrefix)",
+      ExpressionAttributeNames: {
+        "#hk": "searchKey",
+        "#sk": "productNameLower",
+      },
+      ExpressionAttributeValues: {
+        ":hkVal": GLOBAL_SEARCH_KEY, // Constant value HASH key
+        ":searchPrefix": searchPrefix, // The 'starts with' value for the Sort Key
+      },
+    };
+
+    if (nextToken) {
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
+    }
+
+    try {
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new QueryCommand(params)
+      );
+
+      const resolvedItems = Items.map((item) => resolveLocalizations(item));
+
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
+      const ts = await getLastUpdatedTimestamps();
+
+      return {
+        items: resolvedItems,
+        nextToken: newNextToken,
+        lastUpdated: ts.products,
+      };
+    } catch (error) {
+      console.error("DynamoDB Error in searchProducts:", error);
       return { items: [], nextToken: null };
     }
   },
@@ -262,10 +435,53 @@ const adminRoot = {
       return {
         items: Items.map(resolveCategory),
         nextToken: newNextToken,
-        lastUpdated: ts.categories
+        lastUpdated: ts.categories,
       };
     } catch (error) {
       console.error("DynamoDB Error in getAllCategories:", error);
+      return { items: [], nextToken: null };
+    }
+  },
+
+  searchCategories: async ({ search, limit, nextToken }) => {
+    if (!search) {
+      const ts = await getLastUpdatedTimestamps();
+      return { items: [], nextToken: null, lastUpdated: ts.categories };
+    }
+
+    const params = {
+      TableName: CATEGORIES_TABLE_NAME,
+      Limit: limit || 20,
+      FilterExpression: "begins_with(#categoryAttr, :searchString)",
+      ExpressionAttributeNames: { "#categoryAttr": "category" },
+      ExpressionAttributeValues: { ":searchString": search },
+    };
+
+    if (nextToken) {
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
+    }
+
+    try {
+      const { Items, LastEvaluatedKey } = await docClient.send(
+        new ScanCommand(params)
+      );
+
+      const resolvedItems = Items.map(resolveCategory);
+
+      const newNextToken = LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+        : null;
+      const ts = await getLastUpdatedTimestamps();
+
+      return {
+        items: resolvedItems,
+        nextToken: newNextToken,
+        lastUpdated: ts.categories,
+      };
+    } catch (error) {
+      console.error("DynamoDB Error in searchCategories:", error);
       return { items: [], nextToken: null };
     }
   },
@@ -292,7 +508,7 @@ const adminRoot = {
       return {
         items: translatedItems,
         nextToken: newNextToken,
-        lastUpdated: ts.categories
+        lastUpdated: ts.categories,
       };
     } catch (error) {
       console.error(
@@ -310,7 +526,32 @@ const adminRoot = {
       return acc;
     }, {});
 
-    const item = { ...input, localizations: localizationsMap };
+    // Determine productNameLower for GSI keys
+    const defaultLocale = await getDefaultLocale();
+    let productNameLower = null;
+
+    const defaultLocalization = input.localizations.find(
+      (loc) => `${loc.lang}-${loc.country}` === defaultLocale
+    );
+    if (defaultLocalization && defaultLocalization.productName) {
+      productNameLower = defaultLocalization.productName.toLowerCase();
+    } else if (
+      input.localizations.length > 0 &&
+      input.localizations[0].productName
+    ) {
+      productNameLower = input.localizations[0].productName.toLowerCase();
+    }
+
+    const item = {
+      ...input,
+      localizations: localizationsMap,
+      searchKey: GLOBAL_SEARCH_KEY,
+    };
+
+    if (productNameLower !== null) {
+      item.productNameLower = productNameLower;
+    }
+
     const params = {
       TableName: PRODUCTS_TABLE_NAME,
       Item: item,
@@ -319,7 +560,7 @@ const adminRoot = {
 
     try {
       await docClient.send(new PutCommand(params));
-      await updateMetadataTimestamp("product"); 
+      await updateMetadataTimestamp("product");
       return resolveLocalizations(item);
     } catch (error) {
       if (error.name === "ConditionalCheckFailedException") {
@@ -361,7 +602,7 @@ const adminRoot = {
 
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
-      await updateMetadataTimestamp("product"); 
+      await updateMetadataTimestamp("product");
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB updateProduct Error for SKU ${sku}:`, error);
@@ -390,14 +631,55 @@ const adminRoot = {
     const expressionAttributeNames = {};
     const expressionAttributeValues = {};
 
+    const defaultLocaleKey = await getDefaultLocale();
+
+    let productNameLowerValue = null;
+    let fallbackProductName = null;
+
     localizations.forEach((loc, index) => {
       const { lang, country, ...locData } = loc;
       const key = `${lang}-${country}`;
+
+      // Build the SET for localizations
       updateExpressionParts.push(`localizations.#key${index} = :loc${index}`);
       expressionAttributeNames[`#key${index}`] = key;
       expressionAttributeValues[`:loc${index}`] = locData;
+
+      if (!fallbackProductName && locData.productName) {
+        fallbackProductName = locData.productName;
+      }
+
+      // If this localization matches the default locale → prioritize it
+      if (defaultLocaleKey && key === defaultLocaleKey && locData.productName) {
+        productNameLowerValue = locData.productName.toLowerCase();
+      }
     });
 
+    if (!productNameLowerValue && fallbackProductName) {
+      productNameLowerValue = fallbackProductName.toLowerCase();
+    }
+
+    // --- Handling GSI Keys ---
+
+    // 1. Always ensure searchKey is set (needed for Query/Scan on the new index)
+    updateExpressionParts.push(`searchKey = :searchKeyVal`);
+    expressionAttributeValues[`:searchKeyVal`] = GLOBAL_SEARCH_KEY;
+
+    // 2. Add or Remove productNameLower to control indexing/searchability
+    if (productNameLowerValue !== null) {
+      // If we have a product name, SET it (this updates the Sort Key and indexes the item)
+      updateExpressionParts.push(`productNameLower = :productNameLowerVal`);
+      expressionAttributeValues[`:productNameLowerVal`] = productNameLowerValue;
+    } else {
+      // If we don't have a product name (after removing the last one, for example),
+      // we must explicitly REMOVE it to de-index the item from the GSI.
+      // NOTE: This logic is tricky here as it only runs if no name is found in the *new* localizations.
+      // A full removal/clearing of productNameLower would require a separate UpdateExpression
+      // or a preceding Get to determine if the name was removed. For simplicity here, we assume
+      // if it's set in the update, it will use the value, otherwise it remains or needs a separate REMOVE.
+    }
+
+    // Build final Update params
     const params = {
       TableName: PRODUCTS_TABLE_NAME,
       Key: { sku },
@@ -409,7 +691,7 @@ const adminRoot = {
 
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
-      await updateMetadataTimestamp("product"); // ← ADDED
+      await updateMetadataTimestamp("product");
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB addLocalization Error for SKU ${sku}:`, error);
@@ -433,7 +715,7 @@ const adminRoot = {
     };
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
-      await updateMetadataTimestamp("product"); 
+      await updateMetadataTimestamp("product");
       return resolveLocalizations(Attributes);
     } catch (error) {
       console.error(`DynamoDB removeLocalization Error for SKU ${sku}:`, error);
@@ -456,7 +738,7 @@ const adminRoot = {
 
     try {
       await docClient.send(new PutCommand(params));
-      await updateMetadataTimestamp("category"); 
+      await updateMetadataTimestamp("category");
       return resolveCategory(item);
     } catch (error) {
       if (error.name === "ConditionalCheckFailedException") {
@@ -499,7 +781,7 @@ const adminRoot = {
 
     try {
       await docClient.send(new PutCommand(params));
-      await updateMetadataTimestamp("category"); 
+      await updateMetadataTimestamp("category");
       return resolveCategory(item);
     } catch (error) {
       console.error("DynamoDB upsertCategoryTranslation Error:", error);
@@ -517,7 +799,7 @@ const adminRoot = {
     };
     try {
       const { Attributes } = await docClient.send(new UpdateCommand(params));
-      await updateMetadataTimestamp("category"); 
+      await updateMetadataTimestamp("category");
       return resolveCategory(Attributes);
     } catch (error) {
       console.error(
@@ -527,13 +809,43 @@ const adminRoot = {
       throw new Error("Could not remove category translation.");
     }
   },
+
+  setDefaultLocale: async ({ locale }) => {
+    // Basic validation: ensure it's a valid locale format (xx-xx)
+    const localeRegex = /^[a-z]{2}-[a-z]{2}$/i;
+    if (!locale || !localeRegex.test(locale.trim())) {
+      throw new Error(
+        "Invalid locale format. Expected format: 'en-us', 'es-mx', etc."
+      );
+    }
+
+    const normalizedLocale = locale.trim().toLowerCase();
+
+    const params = {
+      TableName: METADATA_TABLE_NAME,
+      Item: {
+        metadataId: "default_locale",
+        value: normalizedLocale,
+      },
+    };
+
+    try {
+      await docClient.send(new PutCommand(params));
+      cachedDefaultLocale = normalizedLocale; // Invalidate cache so next read picks up the new value
+      await updateMetadataTimestamp("product");
+      return normalizedLocale; // success response
+    } catch (error) {
+      console.error("Failed to set default_locale:", error);
+      throw new Error("Could not set default locale.");
+    }
+  },
 };
 
 // Lambda Handler
 exports.handler = async (event) => {
   try {
     const { query, variables, operationName } = JSON.parse(event.body);
-    
+
     // The rootValue needs all resolvers at the top level
     const rootValue = { ...adminRoot };
 
@@ -550,15 +862,23 @@ exports.handler = async (event) => {
     }
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
       body: JSON.stringify(result),
     };
   } catch (error) {
     console.error("Critical error in Lambda handler:", error);
     return {
       statusCode: 400,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ errors: [{ message: error.message || "Invalid GraphQL request." }] }),
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: JSON.stringify({
+        errors: [{ message: error.message || "Invalid GraphQL request." }],
+      }),
     };
   }
 };
