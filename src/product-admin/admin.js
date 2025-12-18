@@ -18,7 +18,7 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
-const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; // ← ADDED
+const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; 
 const CATEGORY_GSI_NAME = "categoryIndex";
 const GLOBAL_SEARCH_KEY = "PRODUCTS";
 
@@ -247,7 +247,7 @@ const adminRoot = {
       return items.map((item) => resolveLocalizations(item));
     } catch (error) {
       console.error(`DynamoDB Error getting products by SKUs:`, error);
-      return []; // Return empty array on error
+      return [];
     }
   },
 
@@ -296,7 +296,12 @@ const adminRoot = {
     }
   },
 
-  getAllProductsByLocalization: async ({ lang, country, limit, nextToken }) => {
+  getAllProductsByLocalization: async ({
+      lang,
+      country,
+      limit,
+      nextToken,
+    }) => {
     console.log(`Querying products for localization: ${lang}-${country}`);
     const params = { TableName: PRODUCTS_TABLE_NAME, Limit: limit || 20 };
     if (nextToken) {
@@ -314,11 +319,12 @@ const adminRoot = {
       const newNextToken = LastEvaluatedKey
         ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
         : null;
+
       const ts = await getLastUpdatedTimestamps();
       return {
         items: resolvedItems,
         nextToken: newNextToken,
-        lastUpdated: ts.products,
+        lastUpdated: ts.products
       };
     } catch (error) {
       console.error(`DynamoDB Error scanning for localization ${key}:`, error);
@@ -345,7 +351,7 @@ const adminRoot = {
       return {
         items: resolvedItems,
         nextToken: newNextToken,
-        lastUpdated: ts.products,
+        lastUpdated: ts.products
       };
     } catch (error) {
       console.error("DynamoDB Error in getAllProducts:", error);
@@ -435,7 +441,7 @@ const adminRoot = {
       return {
         items: Items.map(resolveCategory),
         nextToken: newNextToken,
-        lastUpdated: ts.categories,
+        lastUpdated: ts.categories
       };
     } catch (error) {
       console.error("DynamoDB Error in getAllCategories:", error);
@@ -508,7 +514,7 @@ const adminRoot = {
       return {
         items: translatedItems,
         nextToken: newNextToken,
-        lastUpdated: ts.categories,
+        lastUpdated: ts.categories
       };
     } catch (error) {
       console.error(

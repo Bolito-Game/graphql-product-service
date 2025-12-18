@@ -2,27 +2,56 @@
 Defines the set of possible statuses for a product.
 """
 enum ProductStatus {
+  "The product is available for sale."
   ACTIVE
+  "The product is not currently available for sale."
   INACTIVE
+  "The product is no longer being sold."
   DISCONTINUED
 }
 
 # ---------------------------------------------------------------- #
-# Supporting Types
+# Shared Types
 # ---------------------------------------------------------------- #
 
+"""
+A translated string for a category.
+"""
 type Translation {
+  "Language code (e.g., 'en', 'es')."
   lang: String!
+  "The translated text for the category."
   text: String!
 }
 
+"""
+Language- and country-specific details for a product.
+"""
 type Localization {
+  "Language code (e.g., 'en', 'es')."
   lang: String!
+  "Country code (e.g., 'us', 'mx')."
   country: String!
+  "The localized name of the product."
   productName: String!
+  "A localized description of the product."
   description: String
+  "The price in the local currency."
   price: Float!
+  "The currency code (e.g., 'USD', 'MXN')."
   currency: String!
+}
+
+"""
+Global metadata containing the last update timestamps for major datasets.
+"""
+type Metadata {
+  "ISO-8601 timestamp of the last time any product or localization was modified."
+  productsLastUpdated: AWSDateTime!
+  "ISO-8601 timestamp of the last time any category or translation was modified."
+  categoriesLastUpdated: AWSDateTime!
+  "ISO two-letters code for language and country."
+  defaultLocale:String
 }
 
 # ---------------------------------------------------------------- #
@@ -30,14 +59,18 @@ type Localization {
 # ---------------------------------------------------------------- #
 
 type Category {
+ "The unique identifier for the category (e.g., 'Electronics')."
   category: ID!
+  "All available translations for the category name."
   translations: [Translation!]!
+  "ISO-8601 timestamp when this specific category was last modified (optional)."
+  lastUpdated: AWSDateTime
 }
 
 type PaginatedCategories {
   items: [Category!]!
   nextToken: String
-  "ISO-8601 timestamp when any category was last modified (create/update/delete/translation change)"
+  "ISO-8601 timestamp when any category was last modified"
   lastUpdated: AWSDateTime!
 }
 
@@ -49,7 +82,7 @@ type CategoryTranslation {
 type PaginatedCategoryTranslations {
   items: [CategoryTranslation!]!
   nextToken: String
-  "Same global timestamp as PaginatedCategories — reflects the source data freshness"
+  "Same global timestamp as PaginatedCategories"
   lastUpdated: AWSDateTime!
 }
 
@@ -64,6 +97,8 @@ type Product {
   productStatus: ProductStatus!
   quantityInStock: Int!
   localizations: [Localization!]!
+  "ISO-8601 timestamp when this specific product was last modified (optional)."
+  lastUpdated: AWSDateTime
 }
 
 type PaginatedProducts {
@@ -74,39 +109,29 @@ type PaginatedProducts {
 }
 
 # ---------------------------------------------------------------- #
-# New: Global metadata query (highly recommended)
-# ---------------------------------------------------------------- #
-
-"""
-Global last-update timestamps. Perfect for:
-- HTTP ETag / If-Modified-Since caching
-- Apollo/URQL/RTK-Query cache invalidation
-- Knowing whether to refetch entire datasets
-"""
-type Metadata {
-  productsLastUpdated: AWSDateTime!
-  categoriesLastUpdated: AWSDateTime!
-}
-
-# ---------------------------------------------------------------- #
-# Query — updated with metadata and lastUpdated fields
+# Query
 # ---------------------------------------------------------------- #
 
 type Query {
   # Product Queries
   getProductsBySku(skus: [ID!]!, lang: String = "en", country: String = "us"): [Product]
-  getProductsByCategory(category: String!, lang: String = "en", country: String = "us"): [Product!]!
+  getProductsByCategory(category: String!, lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
   getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
   getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
+  searchProducts(search: String!, limit: Int = 20, nextToken: String): PaginatedProducts
 
   # Category Queries
   getCategory(category: ID!): Category
   getAllCategories(limit: Int = 20, nextToken: String): PaginatedCategories
   getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
+  searchCategories(search: String!, limit: Int = 20, nextToken: String): PaginatedCategories
 
-  "Get the latest modification timestamps for products and categories — ideal for caching"
+  # Global metadata
   metadata: Metadata!
 }
 
-# Required scalar if not already present in your schema
+# ---------------------------------------------------------------- #
+# AWS AppSync Scalar Types
+# ---------------------------------------------------------------- #
+
 scalar AWSDateTime

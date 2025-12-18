@@ -44,7 +44,6 @@ type Localization {
 
 """
 Global metadata containing the last update timestamps for major datasets.
-Used heavily by clients for efficient caching and invalidation.
 """
 type Metadata {
   "ISO-8601 timestamp of the last time any product or localization was modified."
@@ -64,14 +63,14 @@ type Category {
   category: ID!
   "All available translations for the category name."
   translations: [Translation!]!
-  "When this specific category was last modified (optional – rarely needed)."
+  "ISO-8601 timestamp when this specific category was last modified (optional)."
   lastUpdated: AWSDateTime
 }
 
 type PaginatedCategories {
   items: [Category!]!
   nextToken: String
-  "When ANY category was last changed – perfect for cache invalidation."
+  "ISO-8601 timestamp when any category was last modified"
   lastUpdated: AWSDateTime!
 }
 
@@ -83,7 +82,7 @@ type CategoryTranslation {
 type PaginatedCategoryTranslations {
   items: [CategoryTranslation!]!
   nextToken: String
-  "Same global timestamp as PaginatedCategories."
+  "Same global timestamp as PaginatedCategories"
   lastUpdated: AWSDateTime!
 }
 
@@ -98,14 +97,14 @@ type Product {
   productStatus: ProductStatus!
   quantityInStock: Int!
   localizations: [Localization!]!
-  "When this specific product was last modified (optional)."
+  "ISO-8601 timestamp when this specific product was last modified (optional)."
   lastUpdated: AWSDateTime
 }
 
 type PaginatedProducts {
   items: [Product!]!
   nextToken: String
-  "When ANY product or localization was last changed – critical for caching."
+  "ISO-8601 timestamp when any product or localization was last modified"
   lastUpdated: AWSDateTime!
 }
 
@@ -172,8 +171,7 @@ type Query {
   getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
   searchCategories(search: String!, limit: Int = 20, nextToken: String): PaginatedCategories
 
-  # Global metadata – extremely useful for HTTP caching and client-side cache busting
-  "Returns the latest modification timestamps for products and categories."
+  # Global metadata
   metadata: Metadata!
 }
 

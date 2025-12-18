@@ -17,6 +17,7 @@ const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
 const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; 
 const CATEGORY_GSI_NAME = "categoryIndex";
+const GLOBAL_SEARCH_KEY = "PRODUCTS";
 
 // --- Load GraphQL Schema ---
 const schemaString = fs.readFileSync(
@@ -25,92 +26,141 @@ const schemaString = fs.readFileSync(
 );
 const schema = buildSchema(schemaString);
 
+// Helper to read both timestamps
 const getLastUpdatedTimestamps = async () => {
-  try {
-    const [prod, cat] = await Promise.all([
-      docClient.send(new GetCommand({
+  const [prod, cat] = await Promise.all([
+    docClient.send(
+      new GetCommand({
         TableName: METADATA_TABLE_NAME,
-        Key: { metadataId: "products_last_update" }
-      })),
-      docClient.send(new GetCommand({
+        Key: { metadataId: "products_last_update" },
+      })
+    ),
+    docClient.send(
+      new GetCommand({
         TableName: METADATA_TABLE_NAME,
-        Key: { metadataId: "categories_last_update" }
-      }))
-    ]);
-    return {
-      products: prod.Item?.lastUpdated || null,
-      categories: cat.Item?.lastUpdated || null
-    };
-  } catch (err) {
-    console.error("Failed to read metadata table:", err);
-    return { products: null, categories: null };
-  }
-};
-
-// --- Helper Functions ---
-
-/**
- * Formats a DynamoDB product item into a GraphQL Product type, converting the localizations map to an array.
- */
-const resolveLocalizations = (item, lang, country) => {
-  if (!item) {
-    return null;
-  }
-
-  let localizationsArray = [];
-
-  if (lang && country) {
-    const key = `${lang}-${country}`;
-    const specificLoc = item.localizations?.[key];
-
-    if (specificLoc) {
-      localizationsArray.push({ lang, country, ...specificLoc });
-    } else {
-      const localizations = item.localizations || {};
-      const allKeys = Object.keys(localizations);
-
-      const langMatchKey = allKeys.find((k) => k.startsWith(`${lang}-`));
-
-      if (langMatchKey) {
-        const [matchLang, matchCountry] = langMatchKey.split("-");
-        localizationsArray.push({
-          lang: matchLang,
-          country: matchCountry,
-          ...localizations[langMatchKey],
-        });
-      } else if (localizations["en-us"]) {
-        localizationsArray.push({
-          lang: "en",
-          country: "us",
-          ...localizations["en-us"],
-        });
-      } else if (allKeys.length > 0) {
-        const firstKey = allKeys[0];
-        const [firstLang, firstCountry] = firstKey.split("-");
-        localizationsArray.push({
-          lang: firstLang,
-          country: firstCountry,
-          ...localizations[firstKey],
-        });
-      }
-    }
-  } else {
-    localizationsArray = Object.entries(item.localizations || {}).map(
-      ([key, locData]) => {
-        const [lang, country] = key.split("-");
-        return { lang, country, ...locData };
-      }
-    );
-  }
-
+        Key: { metadataId: "categories_last_update" },
+      })
+    ),
+  ]);
   return {
-    ...item,
-    localizations: localizationsArray,
+    products: prod.Item?.value || null,
+    categories: cat.Item?.value || null,
   };
 };
 
+// Helper to read the default locale
+let cachedDefaultLocale = null;
+
+const getDefaultLocale = async () => {
+  if (cachedDefaultLocale !== null) {
+    return cachedDefaultLocale;
+  }
+
+  try {
+    const { Item } = await docClient.send(
+      new GetCommand({
+        TableName: METADATA_TABLE_NAME,
+        Key: { metadataId: "default_locale" },
+      })
+    );
+    cachedDefaultLocale = Item?.value || null;
+    return cachedDefaultLocale;
+  } catch (err) {
+    console.error("Failed to read default_locale from Metadata table", err);
+    cachedDefaultLocale = null;
+    return null;
+  }
+};
+
 /**
- * Formats a DynamoDB category item into a GraphQL Category type.
+ * Formats a DynamoDB product item into a GraphQL Product type, converting the localizations map to an array.
+ * @param {object} item - The item retrieved from DynamoDB.
+ * @param {string} [lang] - Optional language code to filter localizations.
+ * @param {string} [country] - Optional country code to filter localizations.
+ * @returns {object|null} A GraphQL Product object or null if the item is invalid.
+ */
+const resolveLocalizations = async (item, lang, country) => {
+  if (!item) return null;
+
+  const localizations = item.localizations || {};
+  const allKeys = Object.keys(localizations);
+
+  if (allKeys.length === 0) {
+    // No localizations at all
+    return { ...item, localizations: [] };
+  }
+
+  // ———————————————————————————————————————————————
+  // 1. Specific locale requested → return exactly ONE
+  // ———————————————————————————————————————————————
+  if (lang && country) {
+    const exactKey = `${lang}-${country}`;
+
+    // Exact match
+    if (localizations[exactKey]) {
+      const [l, c] = exactKey.split("-");
+      return {
+        ...item,
+        localizations: [{ lang: l, country: c, ...localizations[exactKey] }],
+      };
+    }
+
+    // Same language, any country
+    const langMatch = allKeys.find((k) => k.startsWith(`${lang}-`));
+    if (langMatch) {
+      const [l, c] = langMatch.split("-");
+      return {
+        ...item,
+        localizations: [{ lang: l, country: c, ...localizations[langMatch] }],
+      };
+    }
+
+    // Merchant default locale
+    const defaultKey = await getDefaultLocale();
+    if (defaultKey && localizations[defaultKey]) {
+      const [l, c] = defaultKey.split("-");
+      return {
+        ...item,
+        localizations: [{ lang: l, country: c, ...localizations[defaultKey] }],
+      };
+    }
+
+    // Ultimate fallback: first available
+    const [l, c] = allKeys[0].split("-");
+    return {
+      ...item,
+      localizations: [{ lang: l, country: c, ...localizations[allKeys[0]] }],
+    };
+  }
+
+  // ———————————————————————————————————————————————
+  // 2. No specific locale → return ALL, default first
+  // ———————————————————————————————————————————————
+  const result = [];
+
+  const defaultKey = await getDefaultLocale();
+
+  // Put merchant default first (if it exists in this product)
+  if (defaultKey && localizations[defaultKey]) {
+    const [l, c] = defaultKey.split("-");
+    result.push({ lang: l, country: c, ...localizations[defaultKey] });
+  }
+
+  // Add the rest (skip the default if we already added it)
+  allKeys.forEach((key) => {
+    if (key !== defaultKey) {
+      const [l, c] = key.split("-");
+      result.push({ lang: l, country: c, ...localizations[key] });
+    }
+  });
+
+  return { ...item, localizations: result };
+};
+
+/**
+ * Formats a DynamoDB category item into a GraphQL Category type, converting the translations map to an array.
+ * @param {object} item - The category item from DynamoDB.
+ * @returns {object|null} A GraphQL Category object or null if the item is invalid.
  */
 const resolveCategory = (item) => {
   if (!item) {
@@ -122,7 +172,10 @@ const resolveCategory = (item) => {
       text,
     })
   );
-  return { ...item, translations: translationsArray };
+  return {
+    ...item,
+    translations: translationsArray,
+  };
 };
 
 // --- Root Resolvers (Read-Only) ---
@@ -130,10 +183,30 @@ const readOnlyRoot = {
   Query: {
     
     metadata: async () => {
-      const ts = await getLastUpdatedTimestamps();
+      const [prod, cat, loc] = await Promise.all([
+        docClient.send(
+          new GetCommand({
+            TableName: METADATA_TABLE_NAME,
+            Key: { metadataId: "products_last_update" },
+          })
+        ),
+        docClient.send(
+          new GetCommand({
+            TableName: METADATA_TABLE_NAME,
+            Key: { metadataId: "categories_last_update" },
+          })
+        ),
+        docClient.send(
+          new GetCommand({
+            TableName: METADATA_TABLE_NAME,
+            Key: { metadataId: "default_locale" },
+          })
+        ),
+      ]);
       return {
-        productsLastUpdated: ts.products,
-        categoriesLastUpdated: ts.categories
+        productsLastUpdated: prod.Item?.value || null,
+        categoriesLastUpdated: cat.Item?.value || null,
+        defaultLocale: loc.Item?.value || null,
       };
     },
 
@@ -160,19 +233,48 @@ const readOnlyRoot = {
       }
     },
 
-    getProductsByCategory: async ({ category, lang, country }) => {
+    getProductsByCategory: async ({
+      category,
+      lang,
+      country,
+      limit,
+      nextToken,
+    }) => {
       const params = {
         TableName: PRODUCTS_TABLE_NAME,
         IndexName: CATEGORY_GSI_NAME,
         KeyConditionExpression: "category = :category",
         ExpressionAttributeValues: { ":category": category },
+        Limit: limit || 20,
       };
+      if (nextToken) {
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
+      }
       try {
-        const { Items } = await docClient.send(new QueryCommand(params));
-        return Items.map((item) => resolveLocalizations(item, lang, country));
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new QueryCommand(params)
+        );
+        const resolvedItems = Items.map((item) => resolveLocalizations(item, lang, country));
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
+
+        const ts = await getLastUpdatedTimestamps();
+
+        return {
+          items: resolvedItems,
+          nextToken: newNextToken,
+          lastUpdated: ts.products,
+        };
       } catch (error) {
         console.error(`DynamoDB Error querying category ${category}:`, error);
-        return [];
+        return {
+          items: [],
+          nextToken: null,
+          lastUpdated: new Date().toISOString(),
+        };
       }
     },
 
@@ -207,7 +309,7 @@ const readOnlyRoot = {
           lastUpdated: ts.products
         };
       } catch (error) {
-        console.error(`DynamoDB Error scanning for localization:`, error);
+        console.error(`DynamoDB Error scanning for localization ${key}:`, error);
         return { items: [], nextToken: null };
       }
     },
@@ -235,6 +337,59 @@ const readOnlyRoot = {
         };
       } catch (error) {
         console.error("DynamoDB Error in getAllProducts:", error);
+        return { items: [], nextToken: null };
+      }
+    },
+
+    searchProducts: async ({ search, limit, nextToken }) => {
+      if (!search) {
+        const ts = await getLastUpdatedTimestamps();
+        return { items: [], nextToken: null, lastUpdated: ts.products };
+      }
+
+      const searchPrefix = search.trim().toLowerCase();
+
+      const params = {
+        TableName: PRODUCTS_TABLE_NAME,
+        IndexName: "productSearchIndex",
+        Limit: limit || 20,
+        KeyConditionExpression:
+          "#hk = :hkVal AND begins_with(#sk, :searchPrefix)",
+        ExpressionAttributeNames: {
+          "#hk": "searchKey",
+          "#sk": "productNameLower",
+        },
+        ExpressionAttributeValues: {
+          ":hkVal": GLOBAL_SEARCH_KEY, // Constant value HASH key
+          ":searchPrefix": searchPrefix, // The 'starts with' value for the Sort Key
+        },
+      };
+
+      if (nextToken) {
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
+      }
+
+      try {
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new QueryCommand(params)
+        );
+
+        const resolvedItems = Items.map((item) => resolveLocalizations(item));
+
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
+        const ts = await getLastUpdatedTimestamps();
+
+        return {
+          items: resolvedItems,
+          nextToken: newNextToken,
+          lastUpdated: ts.products,
+        };
+      } catch (error) {
+        console.error("DynamoDB Error in searchProducts:", error);
         return { items: [], nextToken: null };
       }
     },
@@ -272,6 +427,49 @@ const readOnlyRoot = {
         };
       } catch (error) {
         console.error("DynamoDB Error in getAllCategories:", error);
+        return { items: [], nextToken: null };
+      }
+    },
+
+    searchCategories: async ({ search, limit, nextToken }) => {
+      if (!search) {
+        const ts = await getLastUpdatedTimestamps();
+        return { items: [], nextToken: null, lastUpdated: ts.categories };
+      }
+  
+      const params = {
+        TableName: CATEGORIES_TABLE_NAME,
+        Limit: limit || 20,
+        FilterExpression: "begins_with(#categoryAttr, :searchString)",
+        ExpressionAttributeNames: { "#categoryAttr": "category" },
+        ExpressionAttributeValues: { ":searchString": search },
+      };
+  
+      if (nextToken) {
+        params.ExclusiveStartKey = JSON.parse(
+          Buffer.from(nextToken, "base64").toString("utf8")
+        );
+      }
+  
+      try {
+        const { Items, LastEvaluatedKey } = await docClient.send(
+          new ScanCommand(params)
+        );
+  
+        const resolvedItems = Items.map(resolveCategory);
+  
+        const newNextToken = LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null;
+        const ts = await getLastUpdatedTimestamps();
+  
+        return {
+          items: resolvedItems,
+          nextToken: newNextToken,
+          lastUpdated: ts.categories,
+        };
+      } catch (error) {
+        console.error("DynamoDB Error in searchCategories:", error);
         return { items: [], nextToken: null };
       }
     },
