@@ -341,7 +341,13 @@ const readOnlyRoot = {
       }
     },
 
-    searchProducts: async ({ search, limit, nextToken }) => {
+    searchProducts: async ({ 
+      search, 
+      lang,
+      country,
+      limit,
+      nextToken,
+    }) => {
       if (!search) {
         const ts = await getLastUpdatedTimestamps();
         return { items: [], nextToken: null, lastUpdated: ts.products };
@@ -376,7 +382,7 @@ const readOnlyRoot = {
           new QueryCommand(params)
         );
 
-        const resolvedItems = Items.map((item) => resolveLocalizations(item));
+        const resolvedItems = Items.map((item) => resolveLocalizations(item, lang, country));
 
         const newNextToken = LastEvaluatedKey
           ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
@@ -427,49 +433,6 @@ const readOnlyRoot = {
         };
       } catch (error) {
         console.error("DynamoDB Error in getAllCategories:", error);
-        return { items: [], nextToken: null };
-      }
-    },
-
-    searchCategories: async ({ search, limit, nextToken }) => {
-      if (!search) {
-        const ts = await getLastUpdatedTimestamps();
-        return { items: [], nextToken: null, lastUpdated: ts.categories };
-      }
-  
-      const params = {
-        TableName: CATEGORIES_TABLE_NAME,
-        Limit: limit || 20,
-        FilterExpression: "begins_with(#categoryAttr, :searchString)",
-        ExpressionAttributeNames: { "#categoryAttr": "category" },
-        ExpressionAttributeValues: { ":searchString": search },
-      };
-  
-      if (nextToken) {
-        params.ExclusiveStartKey = JSON.parse(
-          Buffer.from(nextToken, "base64").toString("utf8")
-        );
-      }
-  
-      try {
-        const { Items, LastEvaluatedKey } = await docClient.send(
-          new ScanCommand(params)
-        );
-  
-        const resolvedItems = Items.map(resolveCategory);
-  
-        const newNextToken = LastEvaluatedKey
-          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
-          : null;
-        const ts = await getLastUpdatedTimestamps();
-  
-        return {
-          items: resolvedItems,
-          nextToken: newNextToken,
-          lastUpdated: ts.categories,
-        };
-      } catch (error) {
-        console.error("DynamoDB Error in searchCategories:", error);
         return { items: [], nextToken: null };
       }
     },

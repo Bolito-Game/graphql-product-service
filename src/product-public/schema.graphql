@@ -118,13 +118,12 @@ type Query {
   getProductsByCategory(category: String!, lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
   getAllProductsByLocalization(lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
   getAllProducts(limit: Int = 20, nextToken: String): PaginatedProducts
-  searchProducts(search: String!, limit: Int = 20, nextToken: String): PaginatedProducts
+  searchProducts(search: String!, lang: String = "en", country: String = "us", limit: Int = 20, nextToken: String): PaginatedProducts
 
   # Category Queries
   getCategory(category: ID!): Category
   getAllCategories(limit: Int = 20, nextToken: String): PaginatedCategories
   getAllCategoriesByLanguage(lang: String = "en", limit: Int = 20, nextToken: String): PaginatedCategoryTranslations
-  searchCategories(search: String!, limit: Int = 20, nextToken: String): PaginatedCategories
 
   # Global metadata
   metadata: Metadata!
