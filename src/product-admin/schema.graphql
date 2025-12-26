@@ -54,6 +54,20 @@ type Metadata {
   defaultLocale:String
 }
 
+type OrderEvent {
+  eventId: ID!
+  orderId: String!
+  logType: String!
+  timestamp: String!
+  message: String
+  details: String
+}
+
+type PaginatedOrderEvents {
+  items: [OrderEvent!]!
+  nextToken: String
+}
+
 # ---------------------------------------------------------------- #
 # Category Types
 # ---------------------------------------------------------------- #
@@ -173,6 +187,8 @@ type Query {
 
   # Global metadata
   metadata: Metadata!
+
+  getOrderEvents(limit: Int = 20, nextToken: String): PaginatedOrderEvents!
 }
 
 # ---------------------------------------------------------------- #

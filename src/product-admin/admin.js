@@ -19,6 +19,8 @@ const docClient = DynamoDBDocumentClient.from(client);
 const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
 const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; 
+const ORDER_EVENTS_TABLE_NAME = process.env.ORDER_EVENTS_TABLE_NAME || "order_events";
+const TIMELINE_INDEX_NAME = "TimelineIndex";
 const CATEGORY_GSI_NAME = "categoryIndex";
 const GLOBAL_SEARCH_KEY = "PRODUCTS";
 
@@ -522,6 +524,41 @@ const adminRoot = {
         error
       );
       return { items: [], nextToken: null };
+    }
+  },
+
+  getOrderEvents: async ({ limit, nextToken, orderId }) => {
+    try {
+      let params = {
+        TableName: ORDER_EVENTS_TABLE_NAME,
+        Limit: limit || 20,
+        ScanIndexForward: false, // Newest logs first
+        ExclusiveStartKey: nextToken ? JSON.parse(Buffer.from(nextToken, 'base64').toString()) : undefined
+      };
+
+      if (orderId && orderId.trim() !== "") {
+        // Pattern 1: Search for specific Order
+        params.IndexName = "OrderLookupIndex";
+        params.KeyConditionExpression = "orderId = :oid";
+        params.ExpressionAttributeValues = { ":oid": orderId.trim() };
+      } else {
+        // Pattern 2: Search for all PayPal logs (Chronological Feed)
+        params.IndexName = "TimelineIndex";
+        params.KeyConditionExpression = "logType = :lt";
+        params.ExpressionAttributeValues = { ":lt": "PAYPAL_WEBHOOK" };
+      }
+
+      const result = await docClient.send(new QueryCommand(params));
+      
+      return {
+        items: result.Items || [],
+        nextToken: result.LastEvaluatedKey 
+          ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') 
+          : null
+      };
+    } catch (error) {
+      console.error("Error fetching order events:", error);
+      throw new Error("Could not fetch order events.");
     }
   },
 

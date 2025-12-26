@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  A unified stack for the GraphQL Product Service with dual-auth and PayPal integration.
+  A unified stack for the GraphQL Product Service. 
+  Order Events are integrated into the Admin GraphQL API.
 
 Parameters:
   ProjectName:
@@ -19,6 +20,9 @@ Parameters:
   MetadataTableName:
     Type: String
     Default: metadata
+  OrderEventsTableName:
+    Type: String
+    Default: order_events
   PayPalClientId:
     Type: String
     Description: PayPal Sandbox Client ID
@@ -30,10 +34,10 @@ Parameters:
     Description: PayPal Sandbox Webhook ID
   PayPalEnvironmentMode:
     Type: String
-    Description: PayPal Environment Mode.  Either 'live' or 'Sandbox'
+    Description: PayPal Environment Mode. Either 'live' or 'Sandbox'
   DeploymentVersion:
     Type: String
-    Default: "6"
+    Default: "10"
     Description: Increment this value to force a new API Gateway deployment
 
 Globals:
@@ -97,6 +101,30 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
 
+  OrderEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref OrderEventsTableName
+      AttributeDefinitions:
+        - {AttributeName: eventId, AttributeType: S}
+        - {AttributeName: logType, AttributeType: S}
+        - {AttributeName: timestamp, AttributeType: S}
+        - {AttributeName: orderId, AttributeType: S}
+      KeySchema: [{AttributeName: eventId, KeyType: HASH}]
+      BillingMode: PAY_PER_REQUEST
+      GlobalSecondaryIndexes:
+        - IndexName: TimelineIndex
+          KeySchema:
+            - {AttributeName: logType, KeyType: HASH}
+            - {AttributeName: timestamp, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+        - IndexName: OrderLookupIndex
+          KeySchema:
+            - {AttributeName: orderId, KeyType: HASH}
+            - {AttributeName: timestamp, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+
   # =================================================================
   # == 2. LAMBDA FUNCTIONS
   # =================================================================
@@ -111,10 +139,12 @@ Resources:
           PRODUCTS_TABLE_NAME: !Ref ProductsTableName
           CATEGORIES_TABLE_NAME: !Ref CategoriesTableName
           METADATA_TABLE_NAME: !Ref MetadataTableName
+          ORDER_EVENTS_TABLE_NAME: !Ref OrderEventsTableName
       Policies:
         - DynamoDBCrudPolicy: {TableName: !Ref ProductsTableName}
         - DynamoDBCrudPolicy: {TableName: !Ref CategoriesTableName}
         - DynamoDBCrudPolicy: {TableName: !Ref MetadataTableName}
+        - DynamoDBReadPolicy: {TableName: !Ref OrderEventsTableName}
 
   GraphQLPublicFunction:
     Type: AWS::Serverless::Function
@@ -174,12 +204,14 @@ Resources:
           PAYPAL_CLIENT_ID: !Ref PayPalClientId
           PAYPAL_CLIENT_SECRET: !Ref PayPalClientSecret
           ORDERS_TABLE_NAME: !Ref OrdersTableName
+          EVENTS_TABLE_NAME: !Ref OrderEventsTableName
           PAYPAL_ENVIRONMENT_MODE: !Ref PayPalEnvironmentMode
       Policies:
         - DynamoDBCrudPolicy: {TableName: !Ref OrdersTableName}
+        - DynamoDBWritePolicy: {TableName: !Ref OrderEventsTableName}
 
   # =================================================================
-  # == 3. API GATEWAY (EXPLICIT RESOURCE DEFINITIONS)
+  # == 3. API GATEWAY
   # =================================================================
   GraphQLApi:
     Type: AWS::ApiGateway::RestApi
@@ -199,9 +231,11 @@ Resources:
   AdminApiResourceParent:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !GetAtt GraphQLApi.RootResourceId, PathPart: admin}
+  
   AdminApiResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref AdminApiResourceParent, PathPart: graphql}
+  
   AdminApiMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -219,6 +253,7 @@ Resources:
   PublicApiResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PublicApiResourceParent, PathPart: graphql}
+
   PublicApiMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -236,6 +271,7 @@ Resources:
   CreateOrderApiResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PaypalApiResource, PathPart: create-order}
+
   CreateOrderApiMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -249,6 +285,7 @@ Resources:
   CaptureOrderApiResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PaypalApiResource, PathPart: capture-order}
+
   CaptureOrderApiMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -262,6 +299,7 @@ Resources:
   WebhookApiResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref GraphQLApi, ParentId: !Ref PaypalApiResource, PathPart: webhook}
+
   WebhookApiMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -272,6 +310,7 @@ Resources:
       ApiKeyRequired: false
       Integration: {Type: AWS_PROXY, IntegrationHttpMethod: POST, Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PaypalWebhookFunction.Arn}/invocations"}
 
+  # OPTIONS Methods for CORS
   AdminApiOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties: {RestApiId: !Ref GraphQLApi, ResourceId: !Ref AdminApiResource, HttpMethod: OPTIONS, AuthorizationType: NONE, Integration: {Type: MOCK, RequestTemplates: {"application/json": '{ "statusCode": 200 }'}, IntegrationResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'", "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'", "method.response.header.Access-Control-Allow-Origin": "'*'"}}]}, MethodResponses: [{StatusCode: '200', ResponseParameters: {"method.response.header.Access-Control-Allow-Headers": true, "method.response.header.Access-Control-Allow-Methods": true, "method.response.header.Access-Control-Allow-Origin": true}, ResponseModels: {"application/json": "Empty"}}]}
@@ -325,7 +364,7 @@ Resources:
       - WebhookApiOptionsMethod
     Properties:
       RestApiId: !Ref GraphQLApi
-      Description: !Sub "Deployment for ${ProjectName} at ${AWS::StackId}-${AWS::StackName}-${AWS::Region}-v${DeploymentVersion}"
+      Description: !Sub "Deployment for ${ProjectName} - v${DeploymentVersion}"
 
   ApiStage:
     Type: AWS::ApiGateway::Stage
@@ -341,7 +380,7 @@ Resources:
           DataTraceEnabled: true
       TracingEnabled: true
       CacheClusterEnabled: false
-      Description: "v1 stage with PayPal APIs"
+      Description: "v1 stage with GraphQL and PayPal APIs"
 
   ApiUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
@@ -391,15 +430,19 @@ Resources:
       AutoVerifiedAttributes: [email]
       Policies:
         PasswordPolicy: {MinimumLength: 8, RequireLowercase: true, RequireNumbers: true, RequireSymbols: false, RequireUppercase: true}
+
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties: {ClientName: !Sub '${ProjectName}-web-client', UserPoolId: !Ref CognitoUserPool, GenerateSecret: false, ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]}
+
   WebAppS3Bucket:
     Type: AWS::S3::Bucket
     Properties: {BucketName: !Sub '${AWS::AccountId}-${ProjectName}-webapp-bucket', AccessControl: Private, PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}}
+
   CloudFrontOriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
     Properties: {OriginAccessControlConfig: {Name: !Sub '${ProjectName}-oac-for-s3', OriginAccessControlOriginType: s3, SigningBehavior: always, SigningProtocol: sigv4}}
+
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -422,6 +465,7 @@ Resources:
         CustomErrorResponses:
           - {ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html}
           - {ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html}
+
   WebAppS3BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -439,38 +483,18 @@ Resources:
 
 Outputs:
   ApiDeploymentId:
-    Description: "ID of the API Gateway deployment"
+    Description: "ID of the current API Gateway deployment"
     Value: !Ref ApiDeployment
-  PaypalCreateOrderEndpoint:
-    Description: "The endpoint URL for the PayPal create-order API"
-    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/paypal/create-order"
-  PaypalCaptureOrderEndpoint:
-    Description: "The endpoint URL for the PayPal capture-order API"
-    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/paypal/capture-order"
-  PaypalWebhookEndpoint:
-    Description: "The endpoint URL for the PayPal webhook API"
-    Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/paypal/webhook"
   AdminApiEndpoint:
-    Description: "The endpoint URL for the admin GraphQL API (requires Cognito JWT)"
+    Description: "The endpoint URL for the admin GraphQL API"
     Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/admin/graphql"
   PublicApiEndpoint:
-    Description: "The endpoint URL for the public GraphQL API (requires API Key)"
+    Description: "The endpoint URL for the public GraphQL API"
     Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/public/graphql"
-  PublicApiKey:
-    Description: "The ID of the API Key for public, non-authenticated clients (retrieve the key value from API Gateway console or CLI)."
-    Value: !Ref ApiKey
+  CloudFrontDomainName:
+    Description: 'Domain name of the CloudFront distribution'
+    Value: !GetAtt CloudFrontDistribution.DomainName
   UserPoolId:
-    Description: 'Cognito User Pool ID for admin web app .env file'
     Value: !Ref CognitoUserPool
   UserPoolClientId:
-    Description: 'Cognito User Pool Client ID for admin web app .env file'
     Value: !Ref CognitoUserPoolClient
-  CloudFrontDomainName:
-    Description: 'Domain name of the CloudFront distribution for the admin web app'
-    Value: !GetAtt CloudFrontDistribution.DomainName
-  WebAppS3BucketName:
-    Description: 'Name of the S3 bucket where the admin web app is deployed'
-    Value: !Ref WebAppS3Bucket
-  AWSRegion:
-    Description: "The AWS Region where the stack is deployed for admin web app .env file"
-    Value: !Ref AWS::Region
