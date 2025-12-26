@@ -37,7 +37,7 @@ Parameters:
     Description: PayPal Environment Mode. Either 'live' or 'Sandbox'
   DeploymentVersion:
     Type: String
-    Default: "10"
+    Default: "11"
     Description: Increment this value to force a new API Gateway deployment
 
 Globals:
@@ -349,7 +349,8 @@ Resources:
         gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
         gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
 
-  ApiDeployment:
+  # Change this parameter name every time you want a real deployment (ie. ApiDeploymentV10 change to ApiDeploymentV11)
+  ApiDeploymentV11:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AdminApiMethod
@@ -366,12 +367,13 @@ Resources:
       RestApiId: !Ref GraphQLApi
       Description: !Sub "Deployment for ${ProjectName} - v${DeploymentVersion}"
 
+  #Change the DeploymentId every time the name changes
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       StageName: v1
       RestApiId: !Ref GraphQLApi
-      DeploymentId: !Ref ApiDeployment
+      DeploymentId: !Ref ApiDeploymentV11
       MethodSettings:
         - ResourcePath: "/*"
           HttpMethod: "*"
@@ -484,7 +486,7 @@ Resources:
 Outputs:
   ApiDeploymentId:
     Description: "ID of the current API Gateway deployment"
-    Value: !Ref ApiDeployment
+    Value: !Ref ApiDeploymentV11
   AdminApiEndpoint:
     Description: "The endpoint URL for the admin GraphQL API"
     Value: !Sub "https://${GraphQLApi}.execute-api.${AWS::Region}.amazonaws.com/v1/admin/graphql"

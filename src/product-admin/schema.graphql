@@ -58,9 +58,10 @@ type OrderEvent {
   eventId: ID!
   orderId: String!
   logType: String!
-  timestamp: String!
-  message: String
-  details: String
+  timestamp: AWSDateTime!
+  eventType: String!
+  summary: String!
+  resource: String # JSON string of the raw PayPal resource
 }
 
 type PaginatedOrderEvents {
@@ -188,7 +189,7 @@ type Query {
   # Global metadata
   metadata: Metadata!
 
-  getOrderEvents(limit: Int = 20, nextToken: String): PaginatedOrderEvents!
+  getOrderEvents(limit: Int = 20, nextToken: String, orderId: String): PaginatedOrderEvents
 }
 
 # ---------------------------------------------------------------- #

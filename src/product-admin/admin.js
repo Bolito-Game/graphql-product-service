@@ -20,7 +20,6 @@ const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
 const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; 
 const ORDER_EVENTS_TABLE_NAME = process.env.ORDER_EVENTS_TABLE_NAME || "order_events";
-const TIMELINE_INDEX_NAME = "TimelineIndex";
 const CATEGORY_GSI_NAME = "categoryIndex";
 const GLOBAL_SEARCH_KEY = "PRODUCTS";
 
@@ -533,8 +532,11 @@ const adminRoot = {
         TableName: ORDER_EVENTS_TABLE_NAME,
         Limit: limit || 20,
         ScanIndexForward: false, // Newest logs first
-        ExclusiveStartKey: nextToken ? JSON.parse(Buffer.from(nextToken, 'base64').toString()) : undefined
       };
+
+      if (nextToken) {
+        params.ExclusiveStartKey = JSON.parse(Buffer.from(nextToken, 'base64').toString());
+      }
 
       if (orderId && orderId.trim() !== "") {
         // Pattern 1: Search for specific Order
@@ -543,6 +545,7 @@ const adminRoot = {
         params.ExpressionAttributeValues = { ":oid": orderId.trim() };
       } else {
         // Pattern 2: Search for all PayPal logs (Chronological Feed)
+        // Matches the logType saved in your webhook.js
         params.IndexName = "TimelineIndex";
         params.KeyConditionExpression = "logType = :lt";
         params.ExpressionAttributeValues = { ":lt": "PAYPAL_WEBHOOK" };
@@ -550,8 +553,15 @@ const adminRoot = {
 
       const result = await docClient.send(new QueryCommand(params));
       
+      // Map DynamoDB items to GraphQL structure if necessary
+      const items = (result.Items || []).map(item => ({
+        ...item,
+        // Stringify resource if it's an object in DB but a String in Schema
+        resource: item.resource ? JSON.stringify(item.resource) : null 
+      }));
+
       return {
-        items: result.Items || [],
+        items: items,
         nextToken: result.LastEvaluatedKey 
           ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') 
           : null
