@@ -59,9 +59,8 @@ type OrderEvent {
   orderId: String!
   logType: String!
   timestamp: AWSDateTime!
-  eventType: String!
-  summary: String!
-  resource: String # JSON string of the raw PayPal resource
+  eventType: String
+  details: String
 }
 
 type PaginatedOrderEvents {

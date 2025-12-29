@@ -552,16 +552,9 @@ const adminRoot = {
       }
 
       const result = await docClient.send(new QueryCommand(params));
-      
-      // Map DynamoDB items to GraphQL structure if necessary
-      const items = (result.Items || []).map(item => ({
-        ...item,
-        // Stringify resource if it's an object in DB but a String in Schema
-        resource: item.resource ? JSON.stringify(item.resource) : null 
-      }));
 
       return {
-        items: items,
+        items: result.Items || [], 
         nextToken: result.LastEvaluatedKey 
           ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') 
           : null

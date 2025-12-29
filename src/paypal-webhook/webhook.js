@@ -63,7 +63,13 @@ exports.handler = async (event) => {
     const result = await verifyResponse.json();
 
     if (result.verification_status === 'SUCCESS') {
-      const orderId = webhookEvent.resource?.id || "UNKNOWN_ID";
+      // CORRELATION LOGIC:
+      // 1. Try custom_id (Your internal DB ID)
+      // 2. Try the related order_id (from supplementary_data)
+      // 3. Fallback to the resource ID
+      const orderId = webhookEvent.resource.custom_id || 
+                      webhookEvent.resource.supplementary_data?.related_ids?.order_id || 
+                      webhookEvent.resource.id || 'UNKNOWN_ID';
       const eventType = webhookEvent.event_type;
 
       // 3. Log to Events Table (Audit Trail)
@@ -75,7 +81,7 @@ exports.handler = async (event) => {
             orderId: orderId,
             logType: "PAYPAL_WEBHOOK",
             timestamp: new Date().toISOString(),
-            message: `PayPal Event: ${eventType}`,
+            eventType: eventType,
             details: JSON.stringify(webhookEvent.resource)
           }
         }));
