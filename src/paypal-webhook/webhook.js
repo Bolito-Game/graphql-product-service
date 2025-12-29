@@ -1,129 +1,111 @@
-const {
-  Client,
-  Environment,
-  WebhooksController,
-} = require('@paypal/paypal-server-sdk');
+const { Client, Environment } = require('@paypal/paypal-server-sdk');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, UpdateCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 
 const dynamoDbClient = new DynamoDBClient({});
 const dynamoDb = DynamoDBDocumentClient.from(dynamoDbClient);
 
-// Helper function to build the client
-function getPayPalClient() {
-  const clientId = process.env.PAYPAL_CLIENT_ID;
-  const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
-  const environment = process.env.PAYPAL_MODE === 'live'
-    ? Environment.Production
-    : Environment.Sandbox; 
-
-  return new Client({
-    clientCredentialsAuthCredentials: {
-      oAuthClientId: clientId,
-      oAuthClientSecret: clientSecret,
+/**
+ * Retrieves OAuth2 token for manual verification call.
+ */
+async function getAccessToken() {
+  const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
+  const baseUrl = process.env.PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+  
+  const response = await fetch(`${baseUrl}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
     },
-    environment: environment,
+    body: 'grant_type=client_credentials'
   });
+  
+  const data = await response.json();
+  return data.access_token;
 }
 
-const retryAsync = async (fn, maxRetries = 3, baseDelay = 1000) => {
-  let lastError;
-  for (let i = 0; i <= maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      if (i === maxRetries) throw lastError;
-      const delay = baseDelay * Math.pow(2, i);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-};
-
 exports.handler = async (event) => {
-  const body = event.body;
-  const headers = event.headers;
+  // 1. Extract headers (Case-insensitive)
+  const getHeader = (name) => {
+    const target = name.toLowerCase();
+    for (const key in event.headers) {
+      if (key.toLowerCase() === target) return event.headers[key];
+    }
+    return null;
+  };
 
-  const client = getPayPalClient();
-  const webhooksController = new WebhooksController(client);
+  const rawBody = event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body;
+  const webhookEvent = JSON.parse(rawBody);
 
   try {
-    const webhookEvent = JSON.parse(body);
-    
-    // 1. Verify Webhook Authenticity
-    const verification = await retryAsync(() => 
-      webhooksController.verifyWebhookSignature({
-        authAlgo: headers['paypal-auth-algo'] || headers['Paypal-Auth-Algo'],
-        certUrl: headers['paypal-cert-url'] || headers['Paypal-Cert-Url'],
-        transmissionId: headers['paypal-transmission-id'] || headers['Paypal-Transmission-Id'],
-        transmissionSig: headers['paypal-transmission-sig'] || headers['Paypal-Transmission-Sig'],
-        transmissionTime: headers['paypal-transmission-time'] || headers['Paypal-Transmission-Time'],
-        webhookId: process.env.PAYPAL_WEBHOOK_ID,
-        webhookEvent: webhookEvent,
+    const accessToken = await getAccessToken();
+    const baseUrl = process.env.PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+
+    // 2. Verify Webhook Signature with PayPal API
+    const verifyResponse = await fetch(`${baseUrl}/v1/notifications/verify-webhook-signature`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        auth_algo: getHeader('paypal-auth-algo'),
+        cert_url: getHeader('paypal-cert-url'),
+        transmission_id: getHeader('paypal-transmission-id'),
+        transmission_sig: getHeader('paypal-transmission-sig'),
+        transmission_time: getHeader('paypal-transmission-time'),
+        webhook_id: process.env.PAYPAL_WEBHOOK_ID,
+        webhook_event: webhookEvent
       })
-    );
+    });
 
-    if (verification.result.verification_status === 'SUCCESS') {
+    const result = await verifyResponse.json();
+
+    if (result.verification_status === 'SUCCESS') {
+      const orderId = webhookEvent.resource?.id || "UNKNOWN_ID";
       const eventType = webhookEvent.event_type;
-      const orderId = webhookEvent.resource?.supplementary_data?.related_ids?.order_id || 
-                      webhookEvent.resource?.order_id || 
-                      "UNKNOWN_ORDER";
 
-      // --- CENTRALIZED LOGGING LOGIC ---
-      const eventsTable = process.env.EVENTS_TABLE_NAME;
-      if (eventsTable) {
-        try {
-          await retryAsync(() =>
-            dynamoDb.send(new PutCommand({
-              TableName: eventsTable,
-              Item: {
-                eventId: webhookEvent.id,
-                orderId: orderId,
-                logType: "PAYPAL_WEBHOOK", // Matches admin.js query logic
-                timestamp: new Date().toISOString(),
-                message: `PayPal Event: ${eventType}`,
-                details: JSON.stringify(webhookEvent.resource)
-              }
-            }))
-          );
-        } catch (logErr) {
-          console.error('Failed to log event to DynamoDB:', logErr);
-        }
+      // 3. Log to Events Table (Audit Trail)
+      if (process.env.EVENTS_TABLE_NAME) {
+        await dynamoDb.send(new PutCommand({
+          TableName: process.env.EVENTS_TABLE_NAME,
+          Item: {
+            eventId: webhookEvent.id,
+            orderId: orderId,
+            logType: "PAYPAL_WEBHOOK",
+            timestamp: new Date().toISOString(),
+            message: `PayPal Event: ${eventType}`,
+            details: JSON.stringify(webhookEvent.resource)
+          }
+        }));
       }
 
-      // --- BUSINESS LOGIC: UPDATE ORDER STATUS ---
-      if (eventType === 'PAYMENT.CAPTURE.COMPLETED') {
-        const ordersTable = process.env.ORDERS_TABLE_NAME;
-        if (orderId !== "UNKNOWN_ORDER" && ordersTable) {
-          try {
-            await retryAsync(() =>
-              dynamoDb.send(new UpdateCommand({
-                TableName: ordersTable,
-                Key: { orderId },
-                UpdateExpression: 'set #status = :s, completedAt = :t',
-                ExpressionAttributeNames: { '#status': 'status' },
-                ExpressionAttributeValues: {
-                  ':s': 'COMPLETED',
-                  ':t': new Date().toISOString()
-                }
-              }))
-            );
-            console.log(`Updated order ${orderId} to COMPLETED`);
-          } catch (dbErr) {
-            console.error(`Failed to update order ${orderId}:`, dbErr);
+      // 4. Update Order Status
+      if (eventType === 'PAYMENT.CAPTURE.COMPLETED' && process.env.ORDERS_TABLE_NAME) {
+        await dynamoDb.send(new UpdateCommand({
+          TableName: process.env.ORDERS_TABLE_NAME,
+          Key: { orderId },
+          UpdateExpression: 'set #s = :s, completedAt = :t',
+          ExpressionAttributeNames: { '#s': 'status' },
+          ExpressionAttributeValues: { 
+            ':s': 'COMPLETED', 
+            ':t': new Date().toISOString() 
           }
-        }
+        }));
+        console.log(`Order ${orderId} successfully updated.`);
       }
     } else {
-      console.error('Webhook verification failed:', verification.result);
+      console.warn(`Verification failed: ${result.verification_status}`);
     }
   } catch (err) {
-    console.error('Webhook processing error:', err);
+    console.error('Critical Error:', err.message);
+    return { statusCode: 500, body: 'Error' };
   }
 
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-    body: JSON.stringify({ received: true }),
+  return { 
+    statusCode: 200, 
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ received: true }) 
   };
 };

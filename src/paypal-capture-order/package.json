@@ -7,7 +7,7 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.433.0",
     "@aws-sdk/lib-dynamodb": "^3.433.0",
-    "@paypal/paypal-server-sdk": "^1.1.0",
+    "@paypal/paypal-server-sdk": "^2.1.0",
     "graphql": "^16.8.1"
   }
 }
