@@ -38,7 +38,7 @@ exports.handler = async (event) => {
   }
 
   const body = JSON.parse(event.body || '{}');
-  const { amount, currency = 'USD' } = body;
+  const { amount, currency = 'USD', details } = body
 
   if (!amount || amount <= 0) {
     return {
@@ -84,6 +84,7 @@ exports.handler = async (event) => {
         status: 'CREATED',
         amount,
         currency,
+        details: details || null,
         createdAt: new Date().toISOString(),
       },
     }));
