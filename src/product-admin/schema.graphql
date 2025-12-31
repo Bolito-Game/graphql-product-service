@@ -54,6 +54,10 @@ type Metadata {
   defaultLocale:String
 }
 
+# ---------------------------------------------------------------- #
+# Order Types
+# ---------------------------------------------------------------- #
+
 type OrderEvent {
   eventId: ID!
   orderId: String!
@@ -65,6 +69,34 @@ type OrderEvent {
 
 type PaginatedOrderEvents {
   items: [OrderEvent!]!
+  nextToken: String
+}
+
+type OrderProduct {
+  sku: String!
+  quantity: Int!
+  price: Float!
+}
+
+type OrderDetail {
+  amount: Float
+  currency: String
+  products: [OrderProduct!]
+}
+
+type Order {
+  orderId: ID!
+  amount: Float!
+  currency: String!
+  status: String!
+  createdAt: AWSDateTime!
+  capturedAt: AWSDateTime
+  completedAt: AWSDateTime
+  details: OrderDetail
+}
+
+type PaginatedOrders {
+  items: [Order!]!
   nextToken: String
 }
 
@@ -188,7 +220,11 @@ type Query {
   # Global metadata
   metadata: Metadata!
 
+  # Order Queries
   getOrderEvents(limit: Int = 20, nextToken: String, orderId: String): PaginatedOrderEvents
+  getAllOrders(limit: Int = 20, nextToken: String): PaginatedOrders
+  getOrder(orderId: ID!): Order
+  getOrderDetails(orderId: ID!): OrderDetail
 }
 
 # ---------------------------------------------------------------- #

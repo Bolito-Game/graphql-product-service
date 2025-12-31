@@ -20,6 +20,7 @@ const PRODUCTS_TABLE_NAME = process.env.PRODUCTS_TABLE_NAME || "products";
 const CATEGORIES_TABLE_NAME = process.env.CATEGORIES_TABLE_NAME || "categories";
 const METADATA_TABLE_NAME = process.env.METADATA_TABLE_NAME || "metadata"; 
 const ORDER_EVENTS_TABLE_NAME = process.env.ORDER_EVENTS_TABLE_NAME || "order_events";
+const ORDERS_TABLE_NAME = process.env.ORDERS_TABLE_NAME || "orders";
 const CATEGORY_GSI_NAME = "categoryIndex";
 const GLOBAL_SEARCH_KEY = "PRODUCTS";
 
@@ -562,6 +563,73 @@ const adminRoot = {
     } catch (error) {
       console.error("Error fetching order events:", error);
       throw new Error("Could not fetch order events.");
+    }
+  },
+
+  getAllOrders: async ({ limit, nextToken }) => {
+    const params = {
+      TableName: ORDERS_TABLE_NAME,
+      IndexName: "CreatedAtIndex",
+      KeyConditionExpression: "#type = :typeValue",
+      ExpressionAttributeNames: {
+        "#type": "type"
+      },
+      ExpressionAttributeValues: {
+        ":typeValue": "ORDER" 
+      },
+      Limit: limit || 20,
+      ScanIndexForward: false, // false = Descending (Newest first), true = Ascending
+    };
+
+    if (nextToken) {
+      params.ExclusiveStartKey = JSON.parse(
+        Buffer.from(nextToken, "base64").toString("utf8")
+      );
+    }
+
+    try {
+      const { Items, LastEvaluatedKey } = await docClient.send(new QueryCommand(params));
+      
+      return {
+        items: Items || [],
+        nextToken: LastEvaluatedKey
+          ? Buffer.from(JSON.stringify(LastEvaluatedKey)).toString("base64")
+          : null,
+      };
+    } catch (error) {
+      console.error("Error in getAllOrders:", error);
+      return { items: [], nextToken: null };
+    }
+  },
+
+  getOrder: async ({ orderId }) => {
+    const params = { 
+      TableName: ORDERS_TABLE_NAME, 
+      Key: { orderId } 
+    };
+    
+    try {
+      const { Item } = await docClient.send(new GetCommand(params));
+      return Item || null;
+    } catch (error) {
+      console.error(`Error getting order ${orderId}:`, error);
+      return null;
+    }
+  },
+
+  getOrderDetails: async ({ orderId }) => {
+    const params = { 
+      TableName: ORDERS_TABLE_NAME, 
+      Key: { orderId },
+      ProjectionExpression: "details" // Only fetch the details attribute
+    };
+    
+    try {
+      const { Item } = await docClient.send(new GetCommand(params));
+      return Item?.details || { amount: 0, currency: "", products: [] };
+    } catch (error) {
+      console.error(`Error getting details for order ${orderId}:`, error);
+      return null;
     }
   },
 

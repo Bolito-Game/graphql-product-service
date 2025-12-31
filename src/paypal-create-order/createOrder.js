@@ -18,7 +18,6 @@ function getPayPalClient() {
     ? Environment.Production
     : Environment.Sandbox; // Use Environment.Sandbox or Environment.Production
 
-  // Client initialization
   return new Client({
     clientCredentialsAuthCredentials: {
       oAuthClientId: clientId,
@@ -50,7 +49,6 @@ exports.handler = async (event) => {
 
   try {
     const client = getPayPalClient();
-    // Use the OrdersController
     const ordersController = new OrdersController(client);
 
     // Build the request body for the controller
@@ -64,7 +62,6 @@ exports.handler = async (event) => {
           },
         },
       ],
-      // Add application_context if needed, e.g., return_url, cancel_url
     };
 
     // Call the createOrder method on the controller
@@ -81,6 +78,7 @@ exports.handler = async (event) => {
       TableName: ordersTable,
       Item: {
         orderId,
+        type: 'ORDER',
         status: 'CREATED',
         amount,
         currency,
